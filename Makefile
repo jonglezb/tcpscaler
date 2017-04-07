@@ -6,3 +6,5 @@ tcpserver: tcpserver.o
 tcpclient: tcpclient.o
 	$(CC) -levent -o $@ $<
 
+clean:
+	rm -f *.o tcpserver tcpclient
