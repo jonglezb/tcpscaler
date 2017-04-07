@@ -5,14 +5,27 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include <event2/event.h>
+#include <event2/buffer.h>
 #include <event2/bufferevent.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <sys/socket.h>
 #include <netdb.h>
 
 static void readcb(struct bufferevent *bev, void *ctx)
 {
-  return;
+  struct evbuffer *input = bufferevent_get_input(bev);
+  size_t len = evbuffer_get_length(input);
+  /* Discard input */
+  evbuffer_drain(input, len);
+}
+
+static void writecb(evutil_socket_t fd, short events, void *ctx)
+{
+  struct bufferevent *bev = ctx;
+  struct evbuffer *output = bufferevent_get_output(bev);
+  static char data[64] = {0};
+  evbuffer_add(output, data, 64);
 }
 
 static void eventcb(struct bufferevent *bev, short events, void *ptr)
@@ -29,19 +42,27 @@ int main(int argc, char** argv)
   struct addrinfo hints;
   struct addrinfo *res_list, *res;
   struct sockaddr_storage *server;
+  struct event *writeev;
+  struct timeval timeout;
   int server_len;
   int sock;
   int ret;
-  unsigned long int nb_conn, conn;
+  unsigned long int nb_conn, conn, rate;
   char host_s[24];
   char port_s[6];
 
-  if (argc < 4) {
-    fprintf(stderr, "usage: %s <host> <port> <nb_conn>\n", argv[0]);
+  if (argc < 5) {
+    fprintf(stderr, "usage: %s <host> <port> <nb_conn> <rate>\n", argv[0]);
     fprintf(stderr, "Connects to the specified host and port, with the chosen number of TCP connections.\n");
+    fprintf(stderr, "[rate] is the total number of writes per second towards the server, accross all TCP connections.\n");
+    fprintf(stderr, "Each write is 64 bytes.\n");
     return 1;
   }
   nb_conn = strtoul(argv[3], NULL, 10);
+  rate = strtoul(argv[4], NULL, 10);
+  timeout.tv_sec = nb_conn / rate;
+  timeout.tv_usec = (1000000 * nb_conn / rate) % 1000000;
+  timeout.tv_usec = timeout.tv_usec > 0 ? timeout.tv_usec : 1;
 
   memset(&hints, 0, sizeof(struct addrinfo));
   hints.ai_family = AF_UNSPEC;
@@ -109,6 +130,13 @@ int main(int argc, char** argv)
     }
     bufferevent_setcb(bufevents[conn], readcb, NULL, eventcb, NULL);
     bufferevent_enable(bufevents[conn], EV_READ|EV_WRITE);
+    /* Setup a periodic task to send data */
+    writeev = event_new(base, -1, EV_PERSIST, writecb, bufevents[conn]);
+    ret = event_add(writeev, &timeout);
+    if (ret != 0) {
+      fprintf(stderr, "Failed to add periodic sending task for connection %d\n", conn);
+    }
+    /* Progress output */
     if (conn % 500 == 0)
       printf("Opened %d connections so far...\n", conn);
 
