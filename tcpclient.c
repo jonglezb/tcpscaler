@@ -57,9 +57,10 @@ int main(int argc, char** argv)
       printf("Success!\n");
       close(sock);
       break;
+    } else {
+      perror("Failed to connect");
+      close(sock);
     }
-
-    close(sock);
   }
 
   /* No address succeeded */
