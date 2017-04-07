@@ -99,7 +99,7 @@ int main(int argc, char** argv)
   }
   printf("Opened %d connections to host %s port %s\n", conn, host_s, port_s);
 
-  printf("Starting event loop");
+  printf("Starting event loop\n");
   event_base_dispatch(base);
 
 done:
