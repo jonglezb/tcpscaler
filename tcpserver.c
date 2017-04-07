@@ -4,8 +4,28 @@
 #include <errno.h>
 #include <arpa/inet.h>
 #include <event2/event.h>
+#include <event2/buffer.h>
+#include <event2/bufferevent.h>
 #include <event2/listener.h>
 
+static void readcb(struct bufferevent *bev, void *ctx)
+{
+  /* This callback is invoked when there is data to read on bev. */
+  struct evbuffer *input = bufferevent_get_input(bev);
+  struct evbuffer *output = bufferevent_get_output(bev);
+
+  /* Copy all the data from the input buffer to the output buffer. */
+  evbuffer_add_buffer(output, input);
+}
+
+static void eventcb(struct bufferevent *bev, short events, void *ctx)
+{
+  if (events & BEV_EVENT_ERROR)
+    perror("Error from bufferevent");
+  if (events & (BEV_EVENT_EOF | BEV_EVENT_ERROR)) {
+    bufferevent_free(bev);
+  }
+}
 
 static void accept_conn_cb(struct evconnlistener *listener,
 			   evutil_socket_t fd, struct sockaddr *address,
@@ -16,6 +36,11 @@ static void accept_conn_cb(struct evconnlistener *listener,
   getnameinfo(address, socklen, host, 24, port, 6,
 	      NI_NUMERICHOST | NI_NUMERICSERV);
   printf("Got new connection from %s:%s\n", host, port);
+  /* Setup a bufferevent */
+  struct event_base *base = evconnlistener_get_base(listener);
+  struct bufferevent *bev = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE);
+  bufferevent_setcb(bev, readcb, NULL, eventcb, NULL);
+  bufferevent_enable(bev, EV_READ|EV_WRITE);
 }
 
 static void
