@@ -96,6 +96,11 @@ int main(int argc, char** argv)
       bufevents[conn] = NULL;
       break;
     }
+    if (conn % 500 == 0)
+      printf("Opened %d connections so far...\n", conn);
+
+    /* Wait a bit, 1ms means 1000 new connections each second. */
+    usleep(1000);
   }
   printf("Opened %d connections to host %s port %s\n", conn, host_s, port_s);
 
