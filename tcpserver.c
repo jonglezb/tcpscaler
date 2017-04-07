@@ -57,7 +57,7 @@ int main(int argc, char** argv)
   /* Listen on the given port, on :: */
   sin.sin6_port = htons(port);
   listener = evconnlistener_new_bind(base, accept_conn_cb, NULL,
-				     LEV_OPT_CLOSE_ON_FREE|LEV_OPT_REUSEABLE, -1,
+				     LEV_OPT_CLOSE_ON_FREE|LEV_OPT_REUSEABLE, 8192,
 				     (struct sockaddr*)&sin, sizeof(sin));
   if (!listener) {
     perror("Couldn't create listener");
