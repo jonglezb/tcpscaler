@@ -10,6 +10,17 @@
 #include <sys/socket.h>
 #include <netdb.h>
 
+static void readcb(struct bufferevent *bev, void *ctx)
+{
+  return;
+}
+
+static void eventcb(struct bufferevent *bev, short events, void *ptr)
+{
+  if (events & BEV_EVENT_ERROR) {
+    perror("Connection error");
+  }
+}
 
 int main(int argc, char** argv)
 {
@@ -96,6 +107,8 @@ int main(int argc, char** argv)
       bufevents[conn] = NULL;
       break;
     }
+    bufferevent_setcb(bufevents[conn], readcb, NULL, eventcb, NULL);
+    bufferevent_enable(bufevents[conn], EV_READ|EV_WRITE);
     if (conn % 500 == 0)
       printf("Opened %d connections so far...\n", conn);
 
