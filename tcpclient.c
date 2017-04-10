@@ -14,6 +14,12 @@
 
 static short verbose;
 
+#define info(...) \
+            do { if (verbose >= 1) fprintf(stderr, __VA_ARGS__); } while (0)
+
+#define debug(...) \
+            do { if (verbose >= 2) fprintf(stderr, __VA_ARGS__); } while (0)
+
 static void readcb(struct bufferevent *bev, void *ctx)
 {
   struct evbuffer *input = bufferevent_get_input(bev);
@@ -131,6 +137,7 @@ int main(int argc, char** argv)
   write_interval.tv_sec = nb_conn / rate;
   write_interval.tv_usec = (1000000 * nb_conn / rate) % 1000000;
   write_interval.tv_usec = write_interval.tv_usec > 0 ? write_interval.tv_usec : 1;
+  debug("write interval %ld s %ld us\n", write_interval.tv_sec, write_interval.tv_usec);
 
   srandom(42);
 
@@ -154,9 +161,9 @@ int main(int argc, char** argv)
 
     getnameinfo(res->ai_addr, res->ai_addrlen, host_s, 24,
 		port_s, 6, NI_NUMERICHOST | NI_NUMERICSERV);
-    printf("Trying to connect to %s port %s...\n", host_s, port_s);
+    info("Trying to connect to %s port %s...\n", host_s, port_s);
     if (connect(sock, res->ai_addr, res->ai_addrlen) != -1) {
-      printf("Success!\n");
+      info("Success!\n");
       close(sock);
       break;
     } else {
@@ -205,6 +212,7 @@ int main(int argc, char** argv)
     rand_usec = random() % (1000000 * write_interval.tv_sec + write_interval.tv_usec + 1);
     initial_timeout.tv_sec = rand_usec / 1000000;
     initial_timeout.tv_usec = rand_usec % 1000000;
+    debug("initial timeout %ld s %ld us\n", initial_timeout.tv_sec, initial_timeout.tv_usec);
     setups[conn].interval = write_interval;
     setups[conn].bev = bufevents[conn];
     setup_writeev = event_new(base, -1, 0, setup_writecb, &(setups[conn]));
@@ -214,12 +222,12 @@ int main(int argc, char** argv)
     }
     /* Progress output */
     if (conn % 500 == 0)
-      printf("Opened %ld connections so far...\n", conn);
+      info("Opened %ld connections so far...\n", conn);
 
     /* Wait a bit, 1ms means 1000 new connections each second. */
     usleep(1000);
   }
-  printf("Opened %ld connections to host %s port %s\n", conn, host_s, port_s);
+  info("Opened %ld connections to host %s port %s\n", conn, host_s, port_s);
 
   printf("Starting event loop\n");
   event_base_dispatch(base);
