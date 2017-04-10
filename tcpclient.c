@@ -52,6 +52,8 @@ static void setup_writecb(evutil_socket_t fd, short events, void *ctx)
   if (ret != 0) {
     fprintf(stderr, "Failed to add periodic sending task\n");
   }
+  /* Also send the first data. */
+  writecb(-1, 0, setup->bev);
 }
 
 static void eventcb(struct bufferevent *bev, short events, void *ptr)
