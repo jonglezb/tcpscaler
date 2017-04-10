@@ -208,6 +208,18 @@ int main(int argc, char** argv)
     }
     bufferevent_setcb(bufevents[conn], readcb, NULL, eventcb, NULL);
     bufferevent_enable(bufevents[conn], EV_READ|EV_WRITE);
+
+    /* Progress output */
+    if (conn % 500 == 0)
+      info("Opened %ld connections so far...\n", conn);
+
+    /* Wait a bit, 1ms means 1000 new connections each second. */
+    usleep(1000);
+  }
+  info("Opened %ld connections to host %s port %s\n", conn, host_s, port_s);
+
+  info("Scheduling sending tasks with random offset...\n");
+  for (conn = 0; conn < nb_conn; conn++) {
     /* Schedule task setup_writecb with a random offset. */
     rand_usec = random() % (1000000 * write_interval.tv_sec + write_interval.tv_usec + 1);
     initial_timeout.tv_sec = rand_usec / 1000000;
@@ -220,14 +232,7 @@ int main(int argc, char** argv)
     if (ret != 0) {
       fprintf(stderr, "Failed to add periodic sending task for connection %ld\n", conn);
     }
-    /* Progress output */
-    if (conn % 500 == 0)
-      info("Opened %ld connections so far...\n", conn);
-
-    /* Wait a bit, 1ms means 1000 new connections each second. */
-    usleep(1000);
   }
-  info("Opened %ld connections to host %s port %s\n", conn, host_s, port_s);
 
   printf("Starting event loop\n");
   event_base_dispatch(base);
