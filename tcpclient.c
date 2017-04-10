@@ -12,6 +12,8 @@
 #include <sys/socket.h>
 #include <netdb.h>
 
+static short verbose;
+
 static void readcb(struct bufferevent *bev, void *ctx)
 {
   struct evbuffer *input = bufferevent_get_input(bev);
@@ -63,6 +65,14 @@ static void eventcb(struct bufferevent *bev, short events, void *ptr)
   }
 }
 
+void usage(char* progname) {
+  fprintf(stderr, "usage: %s [-h] [-v]  -p <port>  -r <rate>  -t <nb_conn>  <host>\n",
+	  progname);
+  fprintf(stderr, "Connects to the specified host and port, with the chosen number of TCP connections.\n");
+  fprintf(stderr, "[rate] is the total number of writes per second towards the server, accross all TCP connections.\n");
+  fprintf(stderr, "Each write is 64 bytes.\n");
+}
+
 int main(int argc, char** argv)
 {
   struct event_base *base;
@@ -77,19 +87,46 @@ int main(int argc, char** argv)
   int server_len;
   int sock;
   int ret;
-  unsigned long int nb_conn, conn, rate, rand_usec;
+  int opt;
+  unsigned long int nb_conn = 0, rate = 0;
+  unsigned long int conn, rand_usec;
+  char *host, *port;
   char host_s[24];
   char port_s[6];
 
-  if (argc < 5) {
-    fprintf(stderr, "usage: %s <host> <port> <nb_conn> <rate>\n", argv[0]);
-    fprintf(stderr, "Connects to the specified host and port, with the chosen number of TCP connections.\n");
-    fprintf(stderr, "[rate] is the total number of writes per second towards the server, accross all TCP connections.\n");
-    fprintf(stderr, "Each write is 64 bytes.\n");
+  verbose = 0;
+
+  /* Start with options */
+  while ((opt = getopt(argc, argv, "p:r:t:vh")) != -1) {
+    switch (opt) {
+    case 'p': /* TCP port */
+      port = optarg;
+      break;
+    case 'r': /* rate */
+      rate = strtoul(optarg, NULL, 10);
+      break;
+    case 't': /* Number of TCP connections */
+      nb_conn = strtoul(optarg, NULL, 10);
+      break;
+    case 'v': /* verbose */
+      verbose += 1;
+      break;
+    case 'h': /* help */
+      usage(argv[0]);
+      return 0;
+      break;
+    default:
+      usage(argv[0]);
+      return 1;
+    }
+  }
+
+  if (optind >= argc || port == NULL || rate == 0 || nb_conn == 0) {
+    fprintf(stderr, "Error: missing mandatory arguments\n");
+    usage(argv[0]);
     return 1;
   }
-  nb_conn = strtoul(argv[3], NULL, 10);
-  rate = strtoul(argv[4], NULL, 10);
+  host = argv[optind];
   /* Interval between two writes, for a single TCP connection. */
   write_interval.tv_sec = nb_conn / rate;
   write_interval.tv_usec = (1000000 * nb_conn / rate) % 1000000;
@@ -103,7 +140,7 @@ int main(int argc, char** argv)
   hints.ai_flags = 0;
   hints.ai_protocol = 0;
 
-  ret = getaddrinfo(argv[1], argv[2], &hints, &res_list);
+  ret = getaddrinfo(host, port, &hints, &res_list);
   if (ret != 0) {
     fprintf(stderr, "Error in getaddrinfo: %s\n", gai_strerror(ret));
     return 1;
