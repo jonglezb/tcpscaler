@@ -75,7 +75,7 @@ int main(int argc, char** argv)
   int server_len;
   int sock;
   int ret;
-  unsigned long int nb_conn, conn, rate;
+  unsigned long int nb_conn, conn, rate, rand_usec;
   char host_s[24];
   char port_s[6];
 
@@ -163,8 +163,9 @@ int main(int argc, char** argv)
     bufferevent_setcb(bufevents[conn], readcb, NULL, eventcb, NULL);
     bufferevent_enable(bufevents[conn], EV_READ|EV_WRITE);
     /* Schedule task setup_writecb with a random offset. */
-    initial_timeout.tv_sec = random() % (write_interval.tv_sec + 1);
-    initial_timeout.tv_usec = random() % (write_interval.tv_usec + 1);
+    rand_usec = random() % (1000000 * write_interval.tv_sec + write_interval.tv_usec + 1);
+    initial_timeout.tv_sec = rand_usec / 1000000;
+    initial_timeout.tv_usec = rand_usec % 1000000;
     setups[conn].interval = write_interval;
     setups[conn].bev = bufevents[conn];
     setup_writeev = event_new(base, -1, 0, setup_writecb, &(setups[conn]));
