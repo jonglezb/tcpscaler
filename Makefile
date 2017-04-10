@@ -1,3 +1,5 @@
+CFLAGS = -Wall
+
 all: tcpserver tcpclient
 
 tcpserver: tcpserver.o

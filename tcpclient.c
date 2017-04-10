@@ -173,21 +173,21 @@ int main(int argc, char** argv)
     setup_writeev = event_new(base, -1, 0, setup_writecb, &(setups[conn]));
     ret = event_add(setup_writeev, &initial_timeout);
     if (ret != 0) {
-      fprintf(stderr, "Failed to add periodic sending task for connection %d\n", conn);
+      fprintf(stderr, "Failed to add periodic sending task for connection %ld\n", conn);
     }
     /* Progress output */
     if (conn % 500 == 0)
-      printf("Opened %d connections so far...\n", conn);
+      printf("Opened %ld connections so far...\n", conn);
 
     /* Wait a bit, 1ms means 1000 new connections each second. */
     usleep(1000);
   }
-  printf("Opened %d connections to host %s port %s\n", conn, host_s, port_s);
+  printf("Opened %ld connections to host %s port %s\n", conn, host_s, port_s);
 
   printf("Starting event loop\n");
   event_base_dispatch(base);
 
-done:
+  /* Free all the things */
   for (conn = 0; conn < nb_conn; conn++) {
     if (bufevents[conn] == NULL)
       break;
