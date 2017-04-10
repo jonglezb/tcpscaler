@@ -28,6 +28,32 @@ static void writecb(evutil_socket_t fd, short events, void *ctx)
   evbuffer_add(output, data, 64);
 }
 
+/* The following is used to setup the periodic sending function (writecb).
+   The idea is to have a first, one-shot event (setup_writecb) that sets
+   up the actual periodic write event (writecb).  This allows to have all
+   TCP connections use the same interval, but with a different initial
+   offset.  Otherwise, all TCP connections would be synchronised and send
+   data simultaneously. */
+
+struct writecb_setup {
+  struct bufferevent *bev;
+  struct timeval interval;
+};
+
+static void setup_writecb(evutil_socket_t fd, short events, void *ctx)
+{
+  struct writecb_setup *setup = ctx;
+  struct event_base *base = bufferevent_get_base(setup->bev);
+  struct event *writeev;
+  int ret;
+  /* Setup periodic task to send data */
+  writeev = event_new(base, -1, EV_PERSIST, writecb, setup->bev);
+  ret = event_add(writeev, &setup->interval);
+  if (ret != 0) {
+    fprintf(stderr, "Failed to add periodic sending task\n");
+  }
+}
+
 static void eventcb(struct bufferevent *bev, short events, void *ptr)
 {
   if (events & BEV_EVENT_ERROR) {
@@ -42,8 +68,10 @@ int main(int argc, char** argv)
   struct addrinfo hints;
   struct addrinfo *res_list, *res;
   struct sockaddr_storage *server;
-  struct event *writeev;
-  struct timeval timeout;
+  struct event *setup_writeev;
+  struct timeval write_interval;
+  struct timeval initial_timeout;
+  struct writecb_setup *setups;
   int server_len;
   int sock;
   int ret;
@@ -60,9 +88,12 @@ int main(int argc, char** argv)
   }
   nb_conn = strtoul(argv[3], NULL, 10);
   rate = strtoul(argv[4], NULL, 10);
-  timeout.tv_sec = nb_conn / rate;
-  timeout.tv_usec = (1000000 * nb_conn / rate) % 1000000;
-  timeout.tv_usec = timeout.tv_usec > 0 ? timeout.tv_usec : 1;
+  /* Interval between two writes, for a single TCP connection. */
+  write_interval.tv_sec = nb_conn / rate;
+  write_interval.tv_usec = (1000000 * nb_conn / rate) % 1000000;
+  write_interval.tv_usec = write_interval.tv_usec > 0 ? write_interval.tv_usec : 1;
+
+  srandom(42);
 
   memset(&hints, 0, sizeof(struct addrinfo));
   hints.ai_family = AF_UNSPEC;
@@ -115,6 +146,7 @@ int main(int argc, char** argv)
 
   /* Connect again, but using libevent, and multiple times. */
   bufevents = malloc(nb_conn * sizeof(struct bufferevent*));
+  setups = malloc(nb_conn * sizeof(struct writecb_setup));
   for (conn = 0; conn < nb_conn; conn++) {
     bufevents[conn] = bufferevent_socket_new(base, -1, 0);
     if (bufevents[conn] == NULL) {
@@ -130,9 +162,13 @@ int main(int argc, char** argv)
     }
     bufferevent_setcb(bufevents[conn], readcb, NULL, eventcb, NULL);
     bufferevent_enable(bufevents[conn], EV_READ|EV_WRITE);
-    /* Setup a periodic task to send data */
-    writeev = event_new(base, -1, EV_PERSIST, writecb, bufevents[conn]);
-    ret = event_add(writeev, &timeout);
+    /* Schedule task setup_writecb with a random offset. */
+    initial_timeout.tv_sec = random() % (write_interval.tv_sec + 1);
+    initial_timeout.tv_usec = random() % (write_interval.tv_usec + 1);
+    setups[conn].interval = write_interval;
+    setups[conn].bev = bufevents[conn];
+    setup_writeev = event_new(base, -1, 0, setup_writecb, &(setups[conn]));
+    ret = event_add(setup_writeev, &initial_timeout);
     if (ret != 0) {
       fprintf(stderr, "Failed to add periodic sending task for connection %d\n", conn);
     }
@@ -155,6 +191,7 @@ done:
     bufferevent_free(bufevents[conn]);
   }
   free(bufevents);
+  free(setups);
   event_base_free(base);
   return 0;
 }
