@@ -238,7 +238,7 @@ int main(int argc, char** argv)
   info("Opened %ld connections to host %s port %s\n", conn, host_s, port_s);
 
   info("Scheduling sending tasks with random offset...\n");
-  for (conn = 0; conn < nb_conn; conn++) {
+  for (conn = 0; conn < nb_conn && bufevents[conn] != NULL; conn++) {
     /* Schedule task setup_writecb with a random offset. */
     rand_usec = random() % (1000000 * write_interval.tv_sec + write_interval.tv_usec + 1);
     initial_timeout.tv_sec = rand_usec / 1000000;
