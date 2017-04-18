@@ -1,7 +1,7 @@
 #!/bin/sh
 # Should be run as root
 
-for i in $(seq 20)
+for i in $(seq 0 100)
 do
   create_tap
 done
