@@ -7,6 +7,11 @@
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
 #include <event2/listener.h>
+#include <sys/time.h>
+#include <sys/resource.h>
+
+#define MAX_OPENFILES_DEFAULT 1024 * 1024
+#define MAX_OPENFILES_TARGET  1024 * 1024 * 256
 
 static void readcb(struct bufferevent *bev, void *ctx)
 {
@@ -59,6 +64,9 @@ int main(int argc, char** argv)
   struct event_base *base;
   struct evconnlistener *listener;
   struct sockaddr_in6 sin;
+  struct rlimit limit_openfiles;
+  FILE *nr_open;
+  int ret;
   int port = 4242;
 
   if (argc > 1) {
@@ -68,6 +76,48 @@ int main(int argc, char** argv)
     fprintf(stderr, "Invalid port\n");
     return 1;
   }
+
+  /* Setup limit on number of open files. */
+  /* First, set soft limit to hard limit */
+  ret = getrlimit(RLIMIT_NOFILE, &limit_openfiles);
+  if (ret != 0) {
+    perror("Failed to get limit on number of open files");
+    return 1;
+  }
+  limit_openfiles.rlim_cur = limit_openfiles.rlim_max;
+  ret = setrlimit(RLIMIT_NOFILE, &limit_openfiles);
+
+  /* Then try to increase the limit to the maximum (needs to be root) */
+  limit_openfiles.rlim_cur = MAX_OPENFILES_DEFAULT;
+  limit_openfiles.rlim_max = MAX_OPENFILES_DEFAULT;
+  ret = setrlimit(RLIMIT_NOFILE, &limit_openfiles);
+  if (ret != 0) {
+    perror("Failed to increase limit on number of open files to MAX_OPENFILES_DEFAULT");
+    fprintf(stderr, "Try to run this program as root.\n");
+  } else {
+    /* Try to increase the limit even further. */
+    nr_open = fopen("/proc/sys/fs/nr_open", "w");
+    if (nr_open == NULL) {
+      perror("Failed to open /proc/sys/fs/nr_open for writing");
+    } else {
+      fprintf(nr_open, "%d\n", MAX_OPENFILES_TARGET);
+      fclose(nr_open);
+    }
+    limit_openfiles.rlim_cur = MAX_OPENFILES_TARGET;
+    limit_openfiles.rlim_max = MAX_OPENFILES_TARGET;
+    ret = setrlimit(RLIMIT_NOFILE, &limit_openfiles);
+    if (ret != 0) {
+      perror("Failed to increase limit on number of open files to MAX_OPENFILES_TARGET");
+    }
+  }
+
+  /* Display final limit */
+  ret = getrlimit(RLIMIT_NOFILE, &limit_openfiles);
+  if (ret != 0) {
+    perror("Failed to get limit on number of open files");
+    return 1;
+  }
+  printf("Maximum number of TCP clients: %ld\n", limit_openfiles.rlim_cur);
 
   base = event_base_new();
   if (!base) {
