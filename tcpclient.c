@@ -213,14 +213,16 @@ int main(int argc, char** argv)
   bufevents = malloc(nb_conn * sizeof(struct bufferevent*));
   setups = malloc(nb_conn * sizeof(struct writecb_setup));
   for (conn = 0; conn < nb_conn; conn++) {
+    errno = 0;
     bufevents[conn] = bufferevent_socket_new(base, -1, 0);
     if (bufevents[conn] == NULL) {
-      fprintf(stderr, "Failed to create socket-based bufferevent.\n");
+      perror("Failed to create socket-based bufferevent");
       break;
     }
+    errno = 0;
     ret = bufferevent_socket_connect(bufevents[conn], (struct sockaddr*)server, server_len);
     if (ret != 0) {
-      fprintf(stderr, "Failed to connect to host with bufferevent.\n");
+      perror("Failed to connect to host with bufferevent");
       bufferevent_free(bufevents[conn]);
       bufevents[conn] = NULL;
       break;
