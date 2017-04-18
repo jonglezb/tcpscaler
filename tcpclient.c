@@ -9,6 +9,7 @@
 #include <event2/bufferevent.h>
 #include <sys/types.h>
 #include <sys/time.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <netdb.h>
 
@@ -90,6 +91,7 @@ int main(int argc, char** argv)
   struct timeval write_interval;
   struct timeval initial_timeout;
   struct writecb_setup *setups;
+  struct rlimit limit_openfiles;
   int server_len;
   int sock;
   int ret;
@@ -140,6 +142,23 @@ int main(int argc, char** argv)
   debug("write interval %ld s %ld us\n", write_interval.tv_sec, write_interval.tv_usec);
 
   srandom(42);
+
+  /* Set maximum number of open files (set soft limit to hard limit) */
+  ret = getrlimit(RLIMIT_NOFILE, &limit_openfiles);
+  if (ret != 0) {
+    perror("Failed to get limit on number of open files");
+  }
+  limit_openfiles.rlim_cur = limit_openfiles.rlim_max;
+  ret = setrlimit(RLIMIT_NOFILE, &limit_openfiles);
+  if (ret != 0) {
+    perror("Failed to set limit on number of open files");
+  }
+  info("Maximum number of TCP connections: %ld\n", limit_openfiles.rlim_cur);
+  if (nb_conn > limit_openfiles.rlim_cur) {
+    fprintf(stderr,
+	    "Warning: requested number of TCP connections (%ld) larger then maximum number of open files (%ld)\n",
+	    nb_conn, limit_openfiles.rlim_cur);
+  }
 
   memset(&hints, 0, sizeof(struct addrinfo));
   hints.ai_family = AF_UNSPEC;
