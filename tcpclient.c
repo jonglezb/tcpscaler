@@ -33,8 +33,15 @@ static void writecb(evutil_socket_t fd, short events, void *ctx)
 {
   struct bufferevent *bev = ctx;
   struct evbuffer *output = bufferevent_get_output(bev);
-  static char data[64] = {0};
-  evbuffer_add(output, data, 64);
+  /* DNS query for example.com (with type A) */
+  static char data[] = {
+    0x00, 0x1d, /* Size */
+    0x33, 0xd9, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x07, 0x65, 0x78, 0x61,
+    0x6d, 0x70, 0x6c, 0x65, 0x03, 0x63, 0x6f, 0x6d,
+    0x00, 0x00, 0x01, 0x00, 0x01
+  };
+  evbuffer_add(output, data, sizeof(data));
 }
 
 /* The following is used to setup the periodic sending function (writecb).
@@ -77,7 +84,7 @@ void usage(char* progname) {
 	  progname);
   fprintf(stderr, "Connects to the specified host and port, with the chosen number of TCP connections.\n");
   fprintf(stderr, "[rate] is the total number of writes per second towards the server, accross all TCP connections.\n");
-  fprintf(stderr, "Each write is 64 bytes.\n");
+  fprintf(stderr, "Each write is 31 bytes.\n");
 }
 
 int main(int argc, char** argv)
