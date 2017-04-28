@@ -106,8 +106,8 @@ int main(int argc, char** argv)
   unsigned long int nb_conn = 0, rate = 0;
   unsigned long int conn, rand_usec;
   char *host, *port;
-  char host_s[24];
-  char port_s[6];
+  char host_s[NI_MAXHOST];
+  char port_s[NI_MAXSERV];
 
   verbose = 0;
 
@@ -185,8 +185,8 @@ int main(int argc, char** argv)
     if (sock == -1)
       continue;
 
-    getnameinfo(res->ai_addr, res->ai_addrlen, host_s, 24,
-		port_s, 6, NI_NUMERICHOST | NI_NUMERICSERV);
+    getnameinfo(res->ai_addr, res->ai_addrlen, host_s, NI_MAXHOST,
+		port_s, NI_MAXSERV, NI_NUMERICHOST | NI_NUMERICSERV);
     info("Trying to connect to %s port %s...\n", host_s, port_s);
     if (connect(sock, res->ai_addr, res->ai_addrlen) != -1) {
       info("Success!\n");

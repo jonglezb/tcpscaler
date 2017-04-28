@@ -36,9 +36,9 @@ static void accept_conn_cb(struct evconnlistener *listener,
 			   evutil_socket_t fd, struct sockaddr *address,
 			   int socklen, void *ctx)
 {
-  char host[24];
-  char port[6];
-  getnameinfo(address, socklen, host, 24, port, 6,
+  char host[NI_MAXHOST];
+  char port[NI_MAXSERV];
+  getnameinfo(address, socklen, host, NI_MAXHOST, port, NI_MAXSERV,
 	      NI_NUMERICHOST | NI_NUMERICSERV);
   printf("Got new connection from %s:%s\n", host, port);
   /* Setup a bufferevent */
@@ -138,10 +138,10 @@ int main(int argc, char** argv)
     perror("Couldn't create listener");
     return 1;
   }
-  char l_host[24];
-  char l_port[6];
-  getnameinfo((struct sockaddr*)&sin, sizeof(sin), l_host, 24,
-	      l_port, 6, NI_NUMERICHOST | NI_NUMERICSERV);
+  char l_host[NI_MAXHOST];
+  char l_port[NI_MAXSERV];
+  getnameinfo((struct sockaddr*)&sin, sizeof(sin), l_host, NI_MAXHOST,
+	      l_port, NI_MAXSERV, NI_NUMERICHOST | NI_NUMERICSERV);
   printf("Listening on %s port %s\n", l_host, l_port);
   evconnlistener_set_error_cb(listener, accept_error_cb);
   return event_base_dispatch(base);
