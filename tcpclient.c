@@ -15,6 +15,7 @@
 #include <time.h>
 
 static short verbose;
+static short print_rtt;
 
 #define info(...) \
             do { if (verbose >= 1) fprintf(stderr, __VA_ARGS__); } while (0)
@@ -52,9 +53,11 @@ static void readcb(struct bufferevent *bev, void *ctx)
   struct writecb_params *params = ctx;
   /* Compute RTT, in microseconds */
   struct timespec now, result;
-  clock_gettime(CLOCK_MONOTONIC, &now);
-  subtract_timespec(&result, &now, &params->last_query);
-  printf("%ld\n", (result.tv_nsec / 1000) + (1000000 * result.tv_sec));
+  if (print_rtt) {
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    subtract_timespec(&result, &now, &params->last_query);
+    printf("%ld\n", (result.tv_nsec / 1000) + (1000000 * result.tv_sec));
+  }
   /* Discard input */
   struct evbuffer *input = bufferevent_get_input(bev);
   size_t len = evbuffer_get_length(input);
@@ -109,11 +112,12 @@ static void eventcb(struct bufferevent *bev, short events, void *ptr)
 }
 
 void usage(char* progname) {
-  fprintf(stderr, "usage: %s [-h] [-v]  -p <port>  -r <rate>  -t <nb_conn>  <host>\n",
+  fprintf(stderr, "usage: %s [-h] [-v] [-R]  -p <port>  -r <rate>  -t <nb_conn>  <host>\n",
 	  progname);
   fprintf(stderr, "Connects to the specified host and port, with the chosen number of TCP connections.\n");
   fprintf(stderr, "[rate] is the total number of writes per second towards the server, accross all TCP connections.\n");
   fprintf(stderr, "Each write is 31 bytes.\n");
+  fprintf(stderr, "With option '-R', print all RTT samples in microseconds.\n");
 }
 
 int main(int argc, char** argv)
@@ -139,9 +143,10 @@ int main(int argc, char** argv)
   char port_s[NI_MAXSERV];
 
   verbose = 0;
+  print_rtt = 0;
 
   /* Start with options */
-  while ((opt = getopt(argc, argv, "p:r:t:vh")) != -1) {
+  while ((opt = getopt(argc, argv, "p:r:t:vRh")) != -1) {
     switch (opt) {
     case 'p': /* TCP port */
       port = optarg;
@@ -154,6 +159,9 @@ int main(int argc, char** argv)
       break;
     case 'v': /* verbose */
       verbose += 1;
+      break;
+    case 'R': /* Print RTT */
+      print_rtt = 1;
       break;
     case 'h': /* help */
       usage(argv[0]);
