@@ -12,6 +12,7 @@
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <netdb.h>
+#include <time.h>
 
 static short verbose;
 
@@ -21,17 +22,49 @@ static short verbose;
 #define debug(...) \
             do { if (verbose >= 2) fprintf(stderr, __VA_ARGS__); } while (0)
 
+
+struct writecb_params {
+  struct bufferevent *bev;
+  struct timeval interval;
+  /* Used to remember when we sent the last query, to compute a RTT. */
+  struct timespec last_query;
+};
+
+void subtract_timespec(struct timespec *result, const struct timespec *a, const struct timespec *b)
+{
+  if ((a->tv_sec < b->tv_sec) ||
+      ((a->tv_sec == b->tv_sec) &&
+       (a->tv_nsec <= b->tv_nsec))) {		/* TIME1 <= TIME2? */
+    result->tv_sec = result->tv_nsec = 0 ;
+  } else {						/* TIME1 > TIME2 */
+    result->tv_sec = a->tv_sec - b->tv_sec ;
+    if (a->tv_nsec < b->tv_nsec) {
+      result->tv_nsec = a->tv_nsec + 1000000000L - b->tv_nsec ;
+      result->tv_sec-- ;				/* Borrow a second. */
+    } else {
+      result->tv_nsec = a->tv_nsec - b->tv_nsec ;
+    }
+  }
+}
+
 static void readcb(struct bufferevent *bev, void *ctx)
 {
+  struct writecb_params *params = ctx;
+  /* Compute RTT, in microseconds */
+  struct timespec now, result;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  subtract_timespec(&result, &now, &params->last_query);
+  printf("%ld\n", (result.tv_nsec / 1000) + (1000000 * result.tv_sec));
+  /* Discard input */
   struct evbuffer *input = bufferevent_get_input(bev);
   size_t len = evbuffer_get_length(input);
-  /* Discard input */
   evbuffer_drain(input, len);
 }
 
 static void writecb(evutil_socket_t fd, short events, void *ctx)
 {
-  struct bufferevent *bev = ctx;
+  struct writecb_params *params = ctx;
+  struct bufferevent *bev = params->bev;
   struct evbuffer *output = bufferevent_get_output(bev);
   /* DNS query for example.com (with type A) */
   static char data[] = {
@@ -41,6 +74,7 @@ static void writecb(evutil_socket_t fd, short events, void *ctx)
     0x6d, 0x70, 0x6c, 0x65, 0x03, 0x63, 0x6f, 0x6d,
     0x00, 0x00, 0x01, 0x00, 0x01
   };
+  clock_gettime(CLOCK_MONOTONIC, &params->last_query);
   evbuffer_add(output, data, sizeof(data));
 }
 
@@ -51,25 +85,20 @@ static void writecb(evutil_socket_t fd, short events, void *ctx)
    offset.  Otherwise, all TCP connections would be synchronised and send
    data simultaneously. */
 
-struct writecb_setup {
-  struct bufferevent *bev;
-  struct timeval interval;
-};
-
 static void setup_writecb(evutil_socket_t fd, short events, void *ctx)
 {
-  struct writecb_setup *setup = ctx;
+  struct writecb_params *setup = ctx;
   struct event_base *base = bufferevent_get_base(setup->bev);
   struct event *writeev;
   int ret;
   /* Setup periodic task to send data */
-  writeev = event_new(base, -1, EV_PERSIST, writecb, setup->bev);
+  writeev = event_new(base, -1, EV_PERSIST, writecb, setup);
   ret = event_add(writeev, &setup->interval);
   if (ret != 0) {
     fprintf(stderr, "Failed to add periodic sending task\n");
   }
   /* Also send the first data. */
-  writecb(-1, 0, setup->bev);
+  writecb(-1, 0, setup);
 }
 
 static void eventcb(struct bufferevent *bev, short events, void *ptr)
@@ -97,7 +126,7 @@ int main(int argc, char** argv)
   struct event *setup_writeev;
   struct timeval write_interval;
   struct timeval initial_timeout;
-  struct writecb_setup *setups;
+  struct writecb_params *setups;
   struct rlimit limit_openfiles;
   int server_len;
   int sock;
@@ -218,7 +247,7 @@ int main(int argc, char** argv)
 
   /* Connect again, but using libevent, and multiple times. */
   bufevents = malloc(nb_conn * sizeof(struct bufferevent*));
-  setups = malloc(nb_conn * sizeof(struct writecb_setup));
+  setups = malloc(nb_conn * sizeof(struct writecb_params));
   for (conn = 0; conn < nb_conn; conn++) {
     errno = 0;
     bufevents[conn] = bufferevent_socket_new(base, -1, 0);
@@ -234,7 +263,7 @@ int main(int argc, char** argv)
       bufevents[conn] = NULL;
       break;
     }
-    bufferevent_setcb(bufevents[conn], readcb, NULL, eventcb, NULL);
+    bufferevent_setcb(bufevents[conn], readcb, NULL, eventcb, &setups[conn]);
     bufferevent_enable(bufevents[conn], EV_READ|EV_WRITE);
 
     /* Progress output */
@@ -255,6 +284,8 @@ int main(int argc, char** argv)
     debug("initial timeout %ld s %ld us\n", initial_timeout.tv_sec, initial_timeout.tv_usec);
     setups[conn].interval = write_interval;
     setups[conn].bev = bufevents[conn];
+    setups[conn].last_query.tv_sec = 0;
+    setups[conn].last_query.tv_nsec = 0;
     setup_writeev = event_new(base, -1, 0, setup_writecb, &(setups[conn]));
     ret = event_add(setup_writeev, &initial_timeout);
     if (ret != 0) {
@@ -262,7 +293,7 @@ int main(int argc, char** argv)
     }
   }
 
-  printf("Starting event loop\n");
+  info("Starting event loop\n");
   event_base_dispatch(base);
 
   /* Free all the things */
