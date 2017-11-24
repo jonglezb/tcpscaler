@@ -112,12 +112,13 @@ static void eventcb(struct bufferevent *bev, short events, void *ptr)
 }
 
 void usage(char* progname) {
-  fprintf(stderr, "usage: %s [-h] [-v] [-R]  -p <port>  -r <rate>  -t <nb_conn>  <host>\n",
+  fprintf(stderr, "usage: %s [-h] [-v] [-R] [-t duration]  -p <port>  -r <rate>  -c <nb_conn>  <host>\n",
 	  progname);
   fprintf(stderr, "Connects to the specified host and port, with the chosen number of TCP connections.\n");
   fprintf(stderr, "[rate] is the total number of writes per second towards the server, accross all TCP connections.\n");
   fprintf(stderr, "Each write is 31 bytes.\n");
   fprintf(stderr, "With option '-R', print all RTT samples in microseconds.\n");
+  fprintf(stderr, "With option '-t', only run for the given amount of seconds.\n");
 }
 
 int main(int argc, char** argv)
@@ -130,13 +131,14 @@ int main(int argc, char** argv)
   struct event *setup_writeev;
   struct timeval write_interval;
   struct timeval initial_timeout;
+  struct timeval duration_timeval;
   struct writecb_params *setups;
   struct rlimit limit_openfiles;
   int server_len;
   int sock;
   int ret;
   int opt;
-  unsigned long int nb_conn = 0, rate = 0;
+  unsigned long int nb_conn = 0, rate = 0, duration = 0;
   unsigned long int conn, rand_usec;
   char *host, *port;
   char host_s[NI_MAXHOST];
@@ -146,7 +148,7 @@ int main(int argc, char** argv)
   print_rtt = 0;
 
   /* Start with options */
-  while ((opt = getopt(argc, argv, "p:r:t:vRh")) != -1) {
+  while ((opt = getopt(argc, argv, "p:r:c:vRt:h")) != -1) {
     switch (opt) {
     case 'p': /* TCP port */
       port = optarg;
@@ -154,7 +156,7 @@ int main(int argc, char** argv)
     case 'r': /* rate */
       rate = strtoul(optarg, NULL, 10);
       break;
-    case 't': /* Number of TCP connections */
+    case 'c': /* Number of TCP connections */
       nb_conn = strtoul(optarg, NULL, 10);
       break;
     case 'v': /* verbose */
@@ -162,6 +164,9 @@ int main(int argc, char** argv)
       break;
     case 'R': /* Print RTT */
       print_rtt = 1;
+      break;
+    case 't': /* Duration */
+      duration = strtoul(optarg, NULL, 10);
       break;
     case 'h': /* help */
       usage(argv[0]);
@@ -251,6 +256,13 @@ int main(int argc, char** argv)
   if (!base) {
     fprintf(stderr, "Couldn't open event base\n");
     return 1;
+  }
+
+  if (duration > 0) {
+    /* Schedule stop event. */
+    duration_timeval.tv_sec = duration;
+    duration_timeval.tv_usec = 0;
+    event_base_loopexit(base, &duration_timeval);
   }
 
   /* Connect again, but using libevent, and multiple times. */
