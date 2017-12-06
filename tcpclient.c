@@ -112,11 +112,12 @@ static void eventcb(struct bufferevent *bev, short events, void *ptr)
 }
 
 void usage(char* progname) {
-  fprintf(stderr, "usage: %s [-h] [-v] [-R] [-t duration]  -p <port>  -r <rate>  -c <nb_conn>  <host>\n",
+  fprintf(stderr, "usage: %s [-h] [-v] [-R] [-t duration]  [-n new_conn_rate]  -p <port>  -r <rate>  -c <nb_conn>  <host>\n",
 	  progname);
   fprintf(stderr, "Connects to the specified host and port, with the chosen number of TCP connections.\n");
   fprintf(stderr, "[rate] is the total number of writes per second towards the server, accross all TCP connections.\n");
   fprintf(stderr, "Each write is 31 bytes.\n");
+  fprintf(stderr, "[new_conn_rate] is the number of new connections to open per second when starting the client.\n");
   fprintf(stderr, "With option '-R', print all RTT samples in microseconds.\n");
   fprintf(stderr, "With option '-t', only run for the given amount of seconds.\n");
 }
@@ -138,7 +139,8 @@ int main(int argc, char** argv)
   int sock;
   int ret;
   int opt;
-  unsigned long int nb_conn = 0, rate = 0, duration = 0;
+  unsigned long int nb_conn = 0, rate = 0, duration = 0, new_conn_rate = 1000;
+  unsigned long int new_conn_interval;
   unsigned long int conn, rand_usec;
   char *host = NULL, *port = NULL;
   char host_s[NI_MAXHOST];
@@ -148,16 +150,19 @@ int main(int argc, char** argv)
   print_rtt = 0;
 
   /* Start with options */
-  while ((opt = getopt(argc, argv, "p:r:c:vRt:h")) != -1) {
+  while ((opt = getopt(argc, argv, "p:r:c:n:vRt:h")) != -1) {
     switch (opt) {
     case 'p': /* TCP port */
       port = optarg;
       break;
-    case 'r': /* rate */
+    case 'r': /* Sending rate */
       rate = strtoul(optarg, NULL, 10);
       break;
     case 'c': /* Number of TCP connections */
       nb_conn = strtoul(optarg, NULL, 10);
+      break;
+    case 'n': /* Rate of new connections (#/sec) */
+      new_conn_rate = strtoul(optarg, NULL, 10);
       break;
     case 'v': /* verbose */
       verbose += 1;
@@ -189,6 +194,8 @@ int main(int argc, char** argv)
   write_interval.tv_usec = (1000000 * nb_conn / rate) % 1000000;
   write_interval.tv_usec = write_interval.tv_usec > 0 ? write_interval.tv_usec : 1;
   debug("write interval %ld s %ld us\n", write_interval.tv_sec, write_interval.tv_usec);
+  /* Interval between two new connections, in microseconds. */
+  new_conn_interval = 1000000 / new_conn_rate;
 
   srandom(42);
 
@@ -286,12 +293,12 @@ int main(int argc, char** argv)
     bufferevent_setcb(bufevents[conn], readcb, NULL, eventcb, &setups[conn]);
     bufferevent_enable(bufevents[conn], EV_READ|EV_WRITE);
 
-    /* Progress output */
-    if (conn % 500 == 0)
+    /* Progress output, roughly once per second */
+    if (conn % new_conn_rate == 0)
       info("Opened %ld connections so far...\n", conn);
 
-    /* Wait a bit, 1ms means 1000 new connections each second. */
-    usleep(1000);
+    /* Wait a bit between each connection to avoid overwhelming the server. */
+    usleep(new_conn_interval);
   }
   info("Opened %ld connections to host %s port %s\n", conn, host_s, port_s);
 
