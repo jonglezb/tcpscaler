@@ -140,7 +140,7 @@ int main(int argc, char** argv)
   int opt;
   unsigned long int nb_conn = 0, rate = 0, duration = 0;
   unsigned long int conn, rand_usec;
-  char *host, *port;
+  char *host = NULL, *port = NULL;
   char host_s[NI_MAXHOST];
   char port_s[NI_MAXSERV];
 
