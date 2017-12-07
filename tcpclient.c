@@ -14,14 +14,33 @@
 #include <netdb.h>
 #include <time.h>
 
-static short verbose;
-static short print_rtt;
+/* Copied from babeld by Juliusz Chroboczek */
+#define DO_NTOHS(_d, _s) \
+    do { unsigned short _dd; \
+         memcpy(&(_dd), (_s), 2); \
+         _d = ntohs(_dd); } while(0)
+#define DO_NTOHL(_d, _s) \
+    do { unsigned int _dd; \
+         memcpy(&(_dd), (_s), 4); \
+         _d = ntohl(_dd); } while(0)
+#define DO_HTONS(_d, _s) \
+    do { unsigned short _dd; \
+         _dd = htons(_s); \
+         memcpy((_d), &(_dd), 2); } while(0)
+#define DO_HTONL(_d, _s) \
+    do { unsigned _dd; \
+         _dd = htonl(_s); \
+         memcpy((_d), &(_dd), 4); } while(0)
 
 #define info(...) \
             do { if (verbose >= 1) fprintf(stderr, __VA_ARGS__); } while (0)
 
 #define debug(...) \
             do { if (verbose >= 2) fprintf(stderr, __VA_ARGS__); } while (0)
+
+
+static short verbose;
+static short print_rtt;
 
 
 struct writecb_params {
@@ -51,6 +70,28 @@ void subtract_timespec(struct timespec *result, const struct timespec *a, const 
 static void readcb(struct bufferevent *bev, void *ctx)
 {
   struct writecb_params *params = ctx;
+  unsigned char* input_ptr;
+  uint16_t dns_len;
+  /* Retrieve response (or mirrored message), and make sure it is a
+     complete DNS message. */
+  struct evbuffer *input = bufferevent_get_input(bev);
+  size_t input_len = evbuffer_get_length(input);
+  if (input_len < 2) {
+    debug("Short read with size %lu, aborting for now\n", input_len);
+    return;
+  }
+  /* TODO: loop here, in case we have multiple DNS messages waiting in the buffer. */
+  input_ptr = evbuffer_pullup(input, 2);
+  DO_NTOHS(dns_len, input_ptr);
+  if (input_len < dns_len + 2) {
+    /* Incomplete message */
+    debug("Incomplete DNS reply (%lu bytes out of %hu), aborting for now\n",
+	  input_len - 2, dns_len);
+    return;
+  }
+  /* We are now certain to have (at least) one complete DNS message. */
+  /* Discard the DNS message (including the 2-bytes length prefix) */
+  evbuffer_drain(input, dns_len + 2);
   /* Compute RTT, in microseconds */
   struct timespec now, result;
   if (print_rtt) {
@@ -58,10 +99,6 @@ static void readcb(struct bufferevent *bev, void *ctx)
     subtract_timespec(&result, &now, &params->last_query);
     printf("%ld\n", (result.tv_nsec / 1000) + (1000000 * result.tv_sec));
   }
-  /* Discard input */
-  struct evbuffer *input = bufferevent_get_input(bev);
-  size_t len = evbuffer_get_length(input);
-  evbuffer_drain(input, len);
 }
 
 static void writecb(evutil_socket_t fd, short events, void *ctx)
