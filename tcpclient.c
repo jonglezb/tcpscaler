@@ -14,6 +14,15 @@
 #include <netdb.h>
 #include <time.h>
 
+/* Maximum number of queries in flight for a given TCP connection.
+   Defines how many timestamps we will store to compute RTT samples.
+   The value is quite low, because the main use-case of this tool is to
+   open a large number of TCP connections, each sending queries at a very
+   low rate.  When sending queries at a higher rate, this will likely
+   overrun the circular buffer, and the measured RTT will be incorrect
+   (under-estimated). */
+#define MAX_QUERIES_IN_FLIGHT 8
+
 /* Copied from babeld by Juliusz Chroboczek */
 #define DO_NTOHS(_d, _s) \
     do { unsigned short _dd; \
@@ -32,6 +41,9 @@
          _dd = htonl(_s); \
          memcpy((_d), &(_dd), 4); } while(0)
 
+#define error(...) \
+            do { fprintf(stderr, __VA_ARGS__); } while (0)
+
 #define info(...) \
             do { if (verbose >= 1) fprintf(stderr, __VA_ARGS__); } while (0)
 
@@ -46,9 +58,13 @@ static short print_rtt;
 struct writecb_params {
   struct bufferevent *bev;
   struct timeval interval;
-  /* Used to remember when we sent the last query, to compute a RTT. */
-  struct timespec last_query;
+  /* Current query ID, incremented for each query and used to index the
+     query_send_timestamp array. */
+  uint16_t query_id;
+  /* Used to remember when we sent the last X queries, to compute a RTT. */
+  struct timespec query_timestamps[MAX_QUERIES_IN_FLIGHT];
 };
+
 
 void subtract_timespec(struct timespec *result, const struct timespec *a, const struct timespec *b)
 {
@@ -72,32 +88,43 @@ static void readcb(struct bufferevent *bev, void *ctx)
   struct writecb_params *params = ctx;
   unsigned char* input_ptr;
   uint16_t dns_len;
+  uint16_t query_id;
   /* Retrieve response (or mirrored message), and make sure it is a
-     complete DNS message. */
+     complete DNS message.  We retrieve the query ID to compute the
+     RTT. */
   struct evbuffer *input = bufferevent_get_input(bev);
-  size_t input_len = evbuffer_get_length(input);
-  if (input_len < 2) {
-    debug("Short read with size %lu, aborting for now\n", input_len);
-    return;
-  }
-  /* TODO: loop here, in case we have multiple DNS messages waiting in the buffer. */
-  input_ptr = evbuffer_pullup(input, 2);
-  DO_NTOHS(dns_len, input_ptr);
-  if (input_len < dns_len + 2) {
-    /* Incomplete message */
-    debug("Incomplete DNS reply (%lu bytes out of %hu), aborting for now\n",
-	  input_len - 2, dns_len);
-    return;
-  }
-  /* We are now certain to have (at least) one complete DNS message. */
-  /* Discard the DNS message (including the 2-bytes length prefix) */
-  evbuffer_drain(input, dns_len + 2);
-  /* Compute RTT, in microseconds */
-  struct timespec now, result;
-  if (print_rtt) {
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    subtract_timespec(&result, &now, &params->last_query);
-    printf("%ld\n", (result.tv_nsec / 1000) + (1000000 * result.tv_sec));
+  debug("Entering readcb\n");
+  /* Loop until we cannot read a complete DNS message. */
+  while (1) {
+    size_t input_len = evbuffer_get_length(input);
+    if (input_len < 4) {
+      if (input_len > 0) {
+	debug("Short read with size %lu, aborting for now\n", input_len);
+      }
+      return;
+    }
+    input_ptr = evbuffer_pullup(input, 4);
+    DO_NTOHS(dns_len, input_ptr);
+    DO_NTOHS(query_id, input_ptr + 2);
+    debug("Input buffer length: %lu ; DNS length: %hu ; Query ID: %hu\n",
+	  input_len, dns_len, query_id);
+    if (input_len < dns_len + 2) {
+      /* Incomplete message */
+      debug("Incomplete DNS reply for query ID %hu (%lu bytes out of %hu), aborting for now\n",
+	    query_id, input_len - 2, dns_len);
+      return;
+    }
+    /* We are now certain to have a complete DNS message. */
+    /* Discard the DNS message (including the 2-bytes length prefix) */
+    evbuffer_drain(input, dns_len + 2);
+    /* Compute RTT, in microseconds */
+    struct timespec now, result;
+    if (print_rtt) {
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      subtract_timespec(&result, &now,
+			&params->query_timestamps[query_id % MAX_QUERIES_IN_FLIGHT]);
+      printf("%ld\n", (result.tv_nsec / 1000) + (1000000 * result.tv_sec));
+    }
   }
 }
 
@@ -109,13 +136,18 @@ static void writecb(evutil_socket_t fd, short events, void *ctx)
   /* DNS query for example.com (with type A) */
   static char data[] = {
     0x00, 0x1d, /* Size */
-    0x33, 0xd9, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00,
+    0xff, 0xff, /* Query ID */
+    0x01, 0x00, 0x00, 0x01, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x07, 0x65, 0x78, 0x61,
     0x6d, 0x70, 0x6c, 0x65, 0x03, 0x63, 0x6f, 0x6d,
     0x00, 0x00, 0x01, 0x00, 0x01
   };
-  clock_gettime(CLOCK_MONOTONIC, &params->last_query);
+  /* Copy query ID */
+  DO_HTONS(data + 2, params->query_id);
+  /* Record timestamp */
+  clock_gettime(CLOCK_MONOTONIC, &params->query_timestamps[params->query_id % MAX_QUERIES_IN_FLIGHT]);
   evbuffer_add(output, data, sizeof(data));
+  params->query_id += 1;
 }
 
 /* The following is used to setup the periodic sending function (writecb).
@@ -332,7 +364,7 @@ int main(int argc, char** argv)
 
     /* Progress output, roughly once per second */
     if (conn % new_conn_rate == 0)
-      info("Opened %ld connections so far...\n", conn);
+      debug("Opened %ld connections so far...\n", conn);
 
     /* Wait a bit between each connection to avoid overwhelming the server. */
     usleep(new_conn_interval);
@@ -348,8 +380,7 @@ int main(int argc, char** argv)
     debug("initial timeout %ld s %ld us\n", initial_timeout.tv_sec, initial_timeout.tv_usec);
     setups[conn].interval = write_interval;
     setups[conn].bev = bufevents[conn];
-    setups[conn].last_query.tv_sec = 0;
-    setups[conn].last_query.tv_nsec = 0;
+    setups[conn].query_id = 0;
     setup_writeev = event_new(base, -1, 0, setup_writecb, &(setups[conn]));
     ret = event_add(setup_writeev, &initial_timeout);
     if (ret != 0) {
