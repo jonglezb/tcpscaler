@@ -89,6 +89,7 @@ static void readcb(struct bufferevent *bev, void *ctx)
   unsigned char* input_ptr;
   uint16_t dns_len;
   uint16_t query_id;
+  struct timespec now, rtt;
   /* Retrieve response (or mirrored message), and make sure it is a
      complete DNS message.  We retrieve the query ID to compute the
      RTT. */
@@ -96,6 +97,9 @@ static void readcb(struct bufferevent *bev, void *ctx)
   debug("Entering readcb\n");
   /* Loop until we cannot read a complete DNS message. */
   while (1) {
+    if (print_rtt) {
+      clock_gettime(CLOCK_MONOTONIC, &now);
+    }
     size_t input_len = evbuffer_get_length(input);
     if (input_len < 4) {
       if (input_len > 0) {
@@ -115,16 +119,14 @@ static void readcb(struct bufferevent *bev, void *ctx)
       return;
     }
     /* We are now certain to have a complete DNS message. */
+    /* Compute RTT, in microseconds */
+    if (print_rtt) {
+      subtract_timespec(&rtt, &now,
+			&params->query_timestamps[query_id % MAX_QUERIES_IN_FLIGHT]);
+      printf("%ld\n", (rtt.tv_nsec / 1000) + (1000000 * rtt.tv_sec));
+    }
     /* Discard the DNS message (including the 2-bytes length prefix) */
     evbuffer_drain(input, dns_len + 2);
-    /* Compute RTT, in microseconds */
-    struct timespec now, result;
-    if (print_rtt) {
-      clock_gettime(CLOCK_MONOTONIC, &now);
-      subtract_timespec(&result, &now,
-			&params->query_timestamps[query_id % MAX_QUERIES_IN_FLIGHT]);
-      printf("%ld\n", (result.tv_nsec / 1000) + (1000000 * result.tv_sec));
-    }
   }
 }
 
