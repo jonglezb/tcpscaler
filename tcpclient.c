@@ -58,6 +58,8 @@ static short print_rtt;
 struct writecb_params {
   struct bufferevent *bev;
   struct timeval interval;
+  /* ID of the connection, mostly for logging purpose. */
+  uint32_t connection_id;
   /* Current query ID, incremented for each query and used to index the
      query_send_timestamp array. */
   uint16_t query_id;
@@ -89,7 +91,10 @@ static void readcb(struct bufferevent *bev, void *ctx)
   unsigned char* input_ptr;
   uint16_t dns_len;
   uint16_t query_id;
+  struct timespec* query_timestamp;
   struct timespec now, rtt;
+  /* Used for logging, because "now" uses a monotonic clock. */
+  struct timespec now_realtime;
   /* Retrieve response (or mirrored message), and make sure it is a
      complete DNS message.  We retrieve the query ID to compute the
      RTT. */
@@ -99,6 +104,7 @@ static void readcb(struct bufferevent *bev, void *ctx)
   while (1) {
     if (print_rtt) {
       clock_gettime(CLOCK_MONOTONIC, &now);
+      clock_gettime(CLOCK_REALTIME, &now_realtime);
     }
     size_t input_len = evbuffer_get_length(input);
     if (input_len < 4) {
@@ -121,9 +127,14 @@ static void readcb(struct bufferevent *bev, void *ctx)
     /* We are now certain to have a complete DNS message. */
     /* Compute RTT, in microseconds */
     if (print_rtt) {
-      subtract_timespec(&rtt, &now,
-			&params->query_timestamps[query_id % MAX_QUERIES_IN_FLIGHT]);
-      printf("%ld\n", (rtt.tv_nsec / 1000) + (1000000 * rtt.tv_sec));
+      query_timestamp = &params->query_timestamps[query_id % MAX_QUERIES_IN_FLIGHT];
+      subtract_timespec(&rtt, &now, query_timestamp);
+      /* CSV format: connection ID, timestamp at the time of reception
+	 (answer), computed RTT in µs */
+      printf("%u,%lu.%.9lu,%lu\n",
+	     params->connection_id,
+	     now_realtime.tv_sec, now_realtime.tv_nsec,
+	     (rtt.tv_nsec / 1000) + (1000000 * rtt.tv_sec));
     }
     /* Discard the DNS message (including the 2-bytes length prefix) */
     evbuffer_drain(input, dns_len + 2);
@@ -189,7 +200,7 @@ void usage(char* progname) {
   fprintf(stderr, "[rate] is the total number of writes per second towards the server, accross all TCP connections.\n");
   fprintf(stderr, "Each write is 31 bytes.\n");
   fprintf(stderr, "[new_conn_rate] is the number of new connections to open per second when starting the client.\n");
-  fprintf(stderr, "With option '-R', print all RTT samples in microseconds.\n");
+  fprintf(stderr, "With option '-R', print RTT samples as CSV: connection ID, reception timestamp, RTT in microseconds.\n");
   fprintf(stderr, "With option '-t', only run for the given amount of seconds.\n");
 }
 
@@ -382,6 +393,7 @@ int main(int argc, char** argv)
     debug("initial timeout %ld s %ld us\n", initial_timeout.tv_sec, initial_timeout.tv_usec);
     setups[conn].interval = write_interval;
     setups[conn].bev = bufevents[conn];
+    setups[conn].connection_id = conn;
     setups[conn].query_id = 0;
     setup_writeev = event_new(base, -1, 0, setup_writecb, &(setups[conn]));
     ret = event_add(setup_writeev, &initial_timeout);
