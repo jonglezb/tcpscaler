@@ -384,6 +384,9 @@ int main(int argc, char** argv)
   }
   info("Opened %ld connections to host %s port %s\n", conn, host_s, port_s);
 
+  /* Leave some time for all connections to connect */
+  sleep(15);
+
   info("Scheduling sending tasks with random offset...\n");
   for (conn = 0; conn < nb_conn && bufevents[conn] != NULL; conn++) {
     /* Schedule task setup_writecb with a random offset. */
