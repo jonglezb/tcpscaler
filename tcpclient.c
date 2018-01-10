@@ -194,7 +194,7 @@ static void eventcb(struct bufferevent *bev, short events, void *ptr)
 }
 
 void usage(char* progname) {
-  fprintf(stderr, "usage: %s [-h] [-v] [-R] [-t duration]  [-n new_conn_rate]  -p <port>  -r <rate>  -c <nb_conn>  <host>\n",
+  fprintf(stderr, "usage: %s [-h] [-v] [-R] [-s random_seed] [-t duration]  [-n new_conn_rate]  -p <port>  -r <rate>  -c <nb_conn>  <host>\n",
 	  progname);
   fprintf(stderr, "Connects to the specified host and port, with the chosen number of TCP connections.\n");
   fprintf(stderr, "[rate] is the total number of writes per second towards the server, accross all TCP connections.\n");
@@ -202,6 +202,7 @@ void usage(char* progname) {
   fprintf(stderr, "[new_conn_rate] is the number of new connections to open per second when starting the client.\n");
   fprintf(stderr, "With option '-R', print RTT samples as CSV: connection ID, reception timestamp, RTT in microseconds.\n");
   fprintf(stderr, "With option '-t', only run for the given amount of seconds.\n");
+  fprintf(stderr, "Option '-s' allows to choose a random seed (unsigned int) to determine times of transmission.  By default, the seed is set to 42\n");
 }
 
 int main(int argc, char** argv)
@@ -221,7 +222,7 @@ int main(int argc, char** argv)
   int sock;
   int ret;
   int opt;
-  unsigned long int nb_conn = 0, rate = 0, duration = 0, new_conn_rate = 1000;
+  unsigned long int nb_conn = 0, rate = 0, duration = 0, new_conn_rate = 1000, random_seed = 42;
   unsigned long int new_conn_interval;
   unsigned long int conn, rand_usec;
   char *host = NULL, *port = NULL;
@@ -232,7 +233,7 @@ int main(int argc, char** argv)
   print_rtt = 0;
 
   /* Start with options */
-  while ((opt = getopt(argc, argv, "p:r:c:n:vRt:h")) != -1) {
+  while ((opt = getopt(argc, argv, "p:r:c:n:vRs:t:h")) != -1) {
     switch (opt) {
     case 'p': /* TCP port */
       port = optarg;
@@ -251,6 +252,9 @@ int main(int argc, char** argv)
       break;
     case 'R': /* Print RTT */
       print_rtt = 1;
+      break;
+    case 's': /* Random seed */
+      random_seed = strtoul(optarg, NULL, 10);
       break;
     case 't': /* Duration */
       duration = strtoul(optarg, NULL, 10);
@@ -279,7 +283,7 @@ int main(int argc, char** argv)
   /* Interval between two new connections, in microseconds. */
   new_conn_interval = 1000000 / new_conn_rate;
 
-  srandom(42);
+  srandom(random_seed);
 
   /* Set maximum number of open files (set soft limit to hard limit) */
   ret = getrlimit(RLIMIT_NOFILE, &limit_openfiles);
