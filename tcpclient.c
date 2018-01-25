@@ -201,7 +201,7 @@ void usage(char* progname) {
   fprintf(stderr, "Each write is 31 bytes.\n");
   fprintf(stderr, "[new_conn_rate] is the number of new connections to open per second when starting the client.\n");
   fprintf(stderr, "With option '-R', print RTT samples as CSV: connection ID, reception timestamp, RTT in microseconds.\n");
-  fprintf(stderr, "With option '-t', only run for the given amount of seconds.\n");
+  fprintf(stderr, "With option '-t', only send queries for the given amount of seconds.\n");
   fprintf(stderr, "Option '-s' allows to choose a random seed (unsigned int) to determine times of transmission.  By default, the seed is set to 42\n");
 }
 
@@ -351,13 +351,6 @@ int main(int argc, char** argv)
     return 1;
   }
 
-  if (duration > 0) {
-    /* Schedule stop event. */
-    duration_timeval.tv_sec = duration;
-    duration_timeval.tv_usec = 0;
-    event_base_loopexit(base, &duration_timeval);
-  }
-
   /* Connect again, but using libevent, and multiple times. */
   bufevents = malloc(nb_conn * sizeof(struct bufferevent*));
   setups = malloc(nb_conn * sizeof(struct writecb_params));
@@ -407,6 +400,14 @@ int main(int argc, char** argv)
     if (ret != 0) {
       fprintf(stderr, "Failed to add periodic sending task for connection %ld\n", conn);
     }
+  }
+
+  /* Schedule stop event. */
+  if (duration > 0) {
+    info("Scheduling stop event in %ld seconds.\n", duration);
+    duration_timeval.tv_sec = duration;
+    duration_timeval.tv_usec = 0;
+    event_base_loopexit(base, &duration_timeval);
   }
 
   info("Starting event loop\n");
