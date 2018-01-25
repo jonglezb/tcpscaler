@@ -387,8 +387,12 @@ int main(int argc, char** argv)
   info("Scheduling sending tasks with random offset...\n");
   for (conn = 0; conn < nb_conn && bufevents[conn] != NULL; conn++) {
     /* Schedule task setup_writecb with a random offset. */
+    /* With RAND_MAX equal to 2^31, the maximum write interval is approx. 35 minutes. */
     rand_usec = random() % (1000000 * write_interval.tv_sec + write_interval.tv_usec + 1);
-    initial_timeout.tv_sec = rand_usec / 1000000;
+    /* Add 5 seconds to avoid missing query deadline even before we start
+       the event loop.  Without this, the first queries all go out at the
+       same time, creating a large burst. */
+    initial_timeout.tv_sec = 5 + rand_usec / 1000000;
     initial_timeout.tv_usec = rand_usec % 1000000;
     debug("initial timeout %ld s %ld us\n", initial_timeout.tv_sec, initial_timeout.tv_usec);
     setups[conn].interval = write_interval;
