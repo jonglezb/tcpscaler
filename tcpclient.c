@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <math.h>
 #include <arpa/inet.h>
 #include <event2/event.h>
 #include <event2/buffer.h>
@@ -14,14 +15,10 @@
 #include <netdb.h>
 #include <time.h>
 
-/* Maximum number of queries in flight for a given TCP connection.
-   Defines how many timestamps we will store to compute RTT samples.
-   The value is quite low, because the main use-case of this tool is to
-   open a large number of TCP connections, each sending queries at a very
-   low rate.  When sending queries at a higher rate, this will likely
-   overrun the circular buffer, and the measured RTT will be incorrect
-   (under-estimated). */
-#define MAX_QUERIES_IN_FLIGHT 8
+/* Maximum expected response time for a query.  This is used to compute
+   how many queries in flight we should expect on each connection, and
+   thus how many timestamps to keep in memory. */
+#define MAX_RTT_MSEC 60000
 
 /* Copied from babeld by Juliusz Chroboczek */
 #define DO_NTOHS(_d, _s) \
@@ -53,6 +50,9 @@
 
 static short verbose;
 static short print_rtt;
+/* Maximum number of queries "in flight" on a given TCP connection.
+   Computed from MAX_RTT, rate, and nb_conn. */
+static uint16_t max_queries_in_flight;
 
 
 struct writecb_params {
@@ -63,8 +63,9 @@ struct writecb_params {
   /* Current query ID, incremented for each query and used to index the
      query_send_timestamp array. */
   uint16_t query_id;
-  /* Used to remember when we sent the last X queries, to compute a RTT. */
-  struct timespec query_timestamps[MAX_QUERIES_IN_FLIGHT];
+  /* Used to remember when we sent the last [max_queries_in_flight]
+     queries, to compute a RTT. */
+  struct timespec* query_timestamps;
 };
 
 
@@ -127,7 +128,7 @@ static void readcb(struct bufferevent *bev, void *ctx)
     /* We are now certain to have a complete DNS message. */
     /* Compute RTT, in microseconds */
     if (print_rtt) {
-      query_timestamp = &params->query_timestamps[query_id % MAX_QUERIES_IN_FLIGHT];
+      query_timestamp = &params->query_timestamps[query_id % max_queries_in_flight];
       subtract_timespec(&rtt, &now, query_timestamp);
       /* CSV format: connection ID, timestamp at the time of reception
 	 (answer), computed RTT in µs */
@@ -158,7 +159,7 @@ static void writecb(evutil_socket_t fd, short events, void *ctx)
   /* Copy query ID */
   DO_HTONS(data + 2, params->query_id);
   /* Record timestamp */
-  clock_gettime(CLOCK_MONOTONIC, &params->query_timestamps[params->query_id % MAX_QUERIES_IN_FLIGHT]);
+  clock_gettime(CLOCK_MONOTONIC, &params->query_timestamps[params->query_id % max_queries_in_flight]);
   evbuffer_add(output, data, sizeof(data));
   params->query_id += 1;
 }
@@ -275,6 +276,16 @@ int main(int argc, char** argv)
     return 1;
   }
   host = argv[optind];
+
+  /* Compute maximum number of queries in flight. */
+  double in_flight = (double) MAX_RTT_MSEC * (double) rate / (double) nb_conn / 1000.;
+  if (in_flight > 65534) {
+    max_queries_in_flight = 65535;
+  } else {
+    max_queries_in_flight = ceil(in_flight);
+  }
+  debug("max queries in flight (per conn): %hu\n", max_queries_in_flight);
+
   /* Interval between two writes, for a single TCP connection. */
   write_interval.tv_sec = nb_conn / rate;
   write_interval.tv_usec = (1000000 * nb_conn / rate) % 1000000;
@@ -369,6 +380,7 @@ int main(int argc, char** argv)
       bufevents[conn] = NULL;
       break;
     }
+    setups[conn].query_timestamps = malloc(max_queries_in_flight * sizeof(struct timespec));
     bufferevent_setcb(bufevents[conn], readcb, NULL, eventcb, &setups[conn]);
     bufferevent_enable(bufevents[conn], EV_READ|EV_WRITE);
 
@@ -422,6 +434,9 @@ int main(int argc, char** argv)
     if (bufevents[conn] == NULL)
       break;
     bufferevent_free(bufevents[conn]);
+    if (setups[conn].query_timestamps != NULL) {
+      free(setups[conn].query_timestamps);
+    }
   }
   free(bufevents);
   free(setups);
