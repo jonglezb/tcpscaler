@@ -53,11 +53,14 @@ static short print_rtt;
 /* Maximum number of queries "in flight" on a given TCP connection.
    Computed from MAX_RTT, rate, and nb_conn. */
 static uint16_t max_queries_in_flight;
+/* Average query rate (in query/s) for each individual TCP connection. */
+static double query_rate;
 
 
 struct writecb_params {
   struct bufferevent *bev;
-  struct timeval interval;
+  /* Used to schedule next query. */
+  struct event* write_event;
   /* ID of the connection, mostly for logging purpose. */
   uint32_t connection_id;
   /* Current query ID, incremented for each query and used to index the
@@ -68,6 +71,15 @@ struct writecb_params {
   struct timespec* query_timestamps;
 };
 
+/* Given a [rate], generate an interarrival sample according to a Poisson
+   process and store it in [tv]. */
+void generate_poisson_interarrival(double rate, struct timeval* tv)
+{
+  double u = drand48();
+  double interarrival = - log(1. - u) / rate;
+  tv->tv_sec = (time_t) floor(interarrival);
+  tv->tv_usec = lrint(interarrival * 1000000.) % 1000000;
+}
 
 void subtract_timespec(struct timespec *result, const struct timespec *a, const struct timespec *b)
 {
@@ -144,9 +156,6 @@ static void readcb(struct bufferevent *bev, void *ctx)
 
 static void writecb(evutil_socket_t fd, short events, void *ctx)
 {
-  struct writecb_params *params = ctx;
-  struct bufferevent *bev = params->bev;
-  struct evbuffer *output = bufferevent_get_output(bev);
   /* DNS query for example.com (with type A) */
   static char data[] = {
     0x00, 0x1d, /* Size */
@@ -156,35 +165,22 @@ static void writecb(evutil_socket_t fd, short events, void *ctx)
     0x6d, 0x70, 0x6c, 0x65, 0x03, 0x63, 0x6f, 0x6d,
     0x00, 0x00, 0x01, 0x00, 0x01
   };
+  static struct timeval interval;
+  struct writecb_params *params = ctx;
+  /* Schedule next query */
+  generate_poisson_interarrival(query_rate, &interval);
+  int ret = event_add(params->write_event, &interval);
+  if (ret != 0) {
+    fprintf(stderr, "Failed to schedule next query (connection %u, current query ID: %u)\n", params->connection_id, params->query_id);
+  }
+  struct bufferevent *bev = params->bev;
+  struct evbuffer *output = bufferevent_get_output(bev);
   /* Copy query ID */
   DO_HTONS(data + 2, params->query_id);
   /* Record timestamp */
   clock_gettime(CLOCK_MONOTONIC, &params->query_timestamps[params->query_id % max_queries_in_flight]);
   evbuffer_add(output, data, sizeof(data));
   params->query_id += 1;
-}
-
-/* The following is used to setup the periodic sending function (writecb).
-   The idea is to have a first, one-shot event (setup_writecb) that sets
-   up the actual periodic write event (writecb).  This allows to have all
-   TCP connections use the same interval, but with a different initial
-   offset.  Otherwise, all TCP connections would be synchronised and send
-   data simultaneously. */
-
-static void setup_writecb(evutil_socket_t fd, short events, void *ctx)
-{
-  struct writecb_params *setup = ctx;
-  struct event_base *base = bufferevent_get_base(setup->bev);
-  struct event *writeev;
-  int ret;
-  /* Setup periodic task to send data */
-  writeev = event_new(base, -1, EV_PERSIST, writecb, setup);
-  ret = event_add(writeev, &setup->interval);
-  if (ret != 0) {
-    fprintf(stderr, "Failed to add periodic sending task\n");
-  }
-  /* Also send the first data. */
-  writecb(-1, 0, setup);
 }
 
 static void eventcb(struct bufferevent *bev, short events, void *ptr)
@@ -213,8 +209,6 @@ int main(int argc, char** argv)
   struct addrinfo hints;
   struct addrinfo *res_list, *res;
   struct sockaddr_storage *server;
-  struct event *setup_writeev;
-  struct timeval write_interval;
   struct timeval initial_timeout;
   struct timeval duration_timeval;
   struct writecb_params *setups;
@@ -223,9 +217,9 @@ int main(int argc, char** argv)
   int sock;
   int ret;
   int opt;
-  unsigned long int nb_conn = 0, rate = 0, duration = 0, new_conn_rate = 1000, random_seed = 42;
+  unsigned long int nb_conn = 0, global_query_rate = 0, duration = 0, new_conn_rate = 1000, random_seed = 42;
   unsigned long int new_conn_interval;
-  unsigned long int conn, rand_usec;
+  unsigned long int conn;
   char *host = NULL, *port = NULL;
   char host_s[NI_MAXHOST];
   char port_s[NI_MAXSERV];
@@ -240,7 +234,7 @@ int main(int argc, char** argv)
       port = optarg;
       break;
     case 'r': /* Sending rate */
-      rate = strtoul(optarg, NULL, 10);
+      global_query_rate = strtoul(optarg, NULL, 10);
       break;
     case 'c': /* Number of TCP connections */
       nb_conn = strtoul(optarg, NULL, 10);
@@ -270,15 +264,17 @@ int main(int argc, char** argv)
     }
   }
 
-  if (optind >= argc || port == NULL || rate == 0 || nb_conn == 0) {
+  if (optind >= argc || port == NULL || global_query_rate == 0 || nb_conn == 0) {
     fprintf(stderr, "Error: missing mandatory arguments\n");
     usage(argv[0]);
     return 1;
   }
   host = argv[optind];
 
+  srand48(random_seed);
+
   /* Compute maximum number of queries in flight. */
-  double in_flight = (double) MAX_RTT_MSEC * (double) rate / (double) nb_conn / 1000.;
+  double in_flight = (double) MAX_RTT_MSEC * (double) global_query_rate / (double) nb_conn / 1000.;
   if (in_flight > 65534) {
     max_queries_in_flight = 65535;
   } else {
@@ -286,15 +282,12 @@ int main(int argc, char** argv)
   }
   debug("max queries in flight (per conn): %hu\n", max_queries_in_flight);
 
-  /* Interval between two writes, for a single TCP connection. */
-  write_interval.tv_sec = nb_conn / rate;
-  write_interval.tv_usec = (1000000 * nb_conn / rate) % 1000000;
-  write_interval.tv_usec = write_interval.tv_usec > 0 ? write_interval.tv_usec : 1;
-  debug("write interval %ld s %ld us\n", write_interval.tv_sec, write_interval.tv_usec);
+  /* Sending rate for queries, on each individual TCP connection. */
+  query_rate = (double) global_query_rate / (double) nb_conn;
+  debug("query rate for each connection: %.3f q/s\n", query_rate);
+
   /* Interval between two new connections, in microseconds. */
   new_conn_interval = 1000000 / new_conn_rate;
-
-  srandom(random_seed);
 
   /* Set maximum number of open files (set soft limit to hard limit) */
   ret = getrlimit(RLIMIT_NOFILE, &limit_openfiles);
@@ -396,23 +389,19 @@ int main(int argc, char** argv)
   /* Leave some time for all connections to connect */
   sleep(3 + nb_conn / 5000);
 
-  info("Scheduling sending tasks with random offset...\n");
+  info("Scheduling initial sending tasks according to a Poisson process...\n");
   for (conn = 0; conn < nb_conn && bufevents[conn] != NULL; conn++) {
-    /* Schedule task setup_writecb with a random offset. */
-    /* With RAND_MAX equal to 2^31, the maximum write interval is approx. 35 minutes. */
-    rand_usec = random() % (1000000 * write_interval.tv_sec + write_interval.tv_usec + 1);
+    generate_poisson_interarrival(query_rate, &initial_timeout);
     /* Add 5 seconds to avoid missing query deadline even before we start
        the event loop.  Without this, the first queries all go out at the
        same time, creating a large burst. */
-    initial_timeout.tv_sec = 5 + rand_usec / 1000000;
-    initial_timeout.tv_usec = rand_usec % 1000000;
+    initial_timeout.tv_sec += 5;
     debug("initial timeout %ld s %ld us\n", initial_timeout.tv_sec, initial_timeout.tv_usec);
-    setups[conn].interval = write_interval;
     setups[conn].bev = bufevents[conn];
     setups[conn].connection_id = conn;
     setups[conn].query_id = 0;
-    setup_writeev = event_new(base, -1, 0, setup_writecb, &(setups[conn]));
-    ret = event_add(setup_writeev, &initial_timeout);
+    setups[conn].write_event = event_new(base, -1, 0, writecb, &(setups[conn]));
+    ret = event_add(setups[conn].write_event, &initial_timeout);
     if (ret != 0) {
       fprintf(stderr, "Failed to add periodic sending task for connection %ld\n", conn);
     }
