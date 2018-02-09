@@ -20,6 +20,12 @@
    thus how many timestamps to keep in memory. */
 #define MAX_RTT_MSEC 60000
 
+/* Average sending period of a single Poisson process (in milliseconds per
+   query).  We will spawn as much iid Poisson processes as needed to
+   achieve the target query rate.  Each Poisson process should be slow
+   enough so that the scheduling overhead has minimal impact. */
+#define POISSON_PROCESS_PERIOD_MSEC 1000
+
 /* Copied from babeld by Juliusz Chroboczek */
 #define DO_NTOHS(_d, _s) \
     do { unsigned short _dd; \
@@ -53,22 +59,33 @@ static short print_rtt;
 /* Maximum number of queries "in flight" on a given TCP connection.
    Computed from MAX_RTT, rate, and nb_conn. */
 static uint16_t max_queries_in_flight;
-/* Average query rate (in query/s) for each individual TCP connection. */
-static double query_rate;
+/* How many Poisson processes we are running in parallel, and at which rate. */
+static uint32_t nb_poisson_processes = 0;
+static double poisson_rate = 1000. / (double) POISSON_PROCESS_PERIOD_MSEC;
+/* How many TCP connections we maintain. */
+static uint32_t nb_conn = 0;
 
 
-struct writecb_params {
+struct tcp_connection {
+  /* The actual connection, encapsulated in a bufferevent. */
   struct bufferevent *bev;
-  /* Used to schedule next query. */
-  struct event* write_event;
   /* ID of the connection, mostly for logging purpose. */
   uint32_t connection_id;
   /* Current query ID, incremented for each query and used to index the
-     query_send_timestamp array. */
+     query_timestamps array. */
   uint16_t query_id;
   /* Used to remember when we sent the last [max_queries_in_flight]
      queries, to compute a RTT. */
   struct timespec* query_timestamps;
+};
+
+struct poisson_process {
+  /* ID of the Poisson process, mostly for logging purpose. */
+  uint32_t process_id;
+  /* Used to schedule the next event for this Poisson process. */
+  struct event* write_event;
+  /* Array of all TCP connections. */
+  struct tcp_connection* connections;
 };
 
 /* Given a [rate], generate an interarrival sample according to a Poisson
@@ -100,7 +117,7 @@ void subtract_timespec(struct timespec *result, const struct timespec *a, const 
 
 static void readcb(struct bufferevent *bev, void *ctx)
 {
-  struct writecb_params *params = ctx;
+  struct tcp_connection *params = ctx;
   unsigned char* input_ptr;
   uint16_t dns_len;
   uint16_t query_id;
@@ -154,7 +171,7 @@ static void readcb(struct bufferevent *bev, void *ctx)
   }
 }
 
-static void writecb(evutil_socket_t fd, short events, void *ctx)
+static void send_query(struct tcp_connection* conn)
 {
   /* DNS query for example.com (with type A) */
   static char data[] = {
@@ -165,22 +182,28 @@ static void writecb(evutil_socket_t fd, short events, void *ctx)
     0x6d, 0x70, 0x6c, 0x65, 0x03, 0x63, 0x6f, 0x6d,
     0x00, 0x00, 0x01, 0x00, 0x01
   };
-  static struct timeval interval;
-  struct writecb_params *params = ctx;
-  /* Schedule next query */
-  generate_poisson_interarrival(query_rate, &interval);
-  int ret = event_add(params->write_event, &interval);
-  if (ret != 0) {
-    fprintf(stderr, "Failed to schedule next query (connection %u, current query ID: %u)\n", params->connection_id, params->query_id);
-  }
-  struct bufferevent *bev = params->bev;
+  struct bufferevent *bev = conn->bev;
   struct evbuffer *output = bufferevent_get_output(bev);
   /* Copy query ID */
-  DO_HTONS(data + 2, params->query_id);
+  DO_HTONS(data + 2, conn->query_id);
   /* Record timestamp */
-  clock_gettime(CLOCK_MONOTONIC, &params->query_timestamps[params->query_id % max_queries_in_flight]);
+  clock_gettime(CLOCK_MONOTONIC, &conn->query_timestamps[conn->query_id % max_queries_in_flight]);
   evbuffer_add(output, data, sizeof(data));
-  params->query_id += 1;
+  conn->query_id += 1;
+}
+
+static void poisson_process_writecb(evutil_socket_t fd, short events, void *ctx)
+{
+  static struct timeval interval;
+  struct poisson_process *params = ctx;
+  /* Schedule next query */
+  generate_poisson_interarrival(poisson_rate, &interval);
+  int ret = event_add(params->write_event, &interval);
+  if (ret != 0) {
+    fprintf(stderr, "Failed to schedule next query (Poisson process %u)\n", params->process_id);
+  }
+  /* Select a TCP connection uniformly at random and send a query on it. */
+  send_query(&params->connections[lrand48() % nb_conn]);
 }
 
 static void eventcb(struct bufferevent *bev, short events, void *ptr)
@@ -211,15 +234,18 @@ int main(int argc, char** argv)
   struct sockaddr_storage *server;
   struct timeval initial_timeout;
   struct timeval duration_timeval;
-  struct writecb_params *setups;
+  /* Array of all TCP connections */
+  struct tcp_connection *connections;
+  /* Array of all Poisson processes */
+  struct poisson_process *processes;
   struct rlimit limit_openfiles;
   int server_len;
   int sock;
   int ret;
   int opt;
-  unsigned long int nb_conn = 0, global_query_rate = 0, duration = 0, new_conn_rate = 1000, random_seed = 42;
+  unsigned long int global_query_rate = 0, duration = 0, new_conn_rate = 1000, random_seed = 42;
   unsigned long int new_conn_interval;
-  unsigned long int conn;
+  unsigned long int conn_id, process_id;
   char *host = NULL, *port = NULL;
   char host_s[NI_MAXHOST];
   char port_s[NI_MAXSERV];
@@ -282,9 +308,9 @@ int main(int argc, char** argv)
   }
   debug("max queries in flight (per conn): %hu\n", max_queries_in_flight);
 
-  /* Sending rate for queries, on each individual TCP connection. */
-  query_rate = (double) global_query_rate / (double) nb_conn;
-  debug("query rate for each connection: %.3f q/s\n", query_rate);
+  /* How many Poisson processes do we need. */
+  nb_poisson_processes = 1000 * global_query_rate / POISSON_PROCESS_PERIOD_MSEC;
+  debug("Will spawn %d independent Poisson processes\n", nb_poisson_processes);
 
   /* Interval between two new connections, in microseconds. */
   new_conn_interval = 1000000 / new_conn_rate;
@@ -302,7 +328,7 @@ int main(int argc, char** argv)
   info("Maximum number of TCP connections: %ld\n", limit_openfiles.rlim_cur);
   if (nb_conn > limit_openfiles.rlim_cur) {
     fprintf(stderr,
-	    "Warning: requested number of TCP connections (%ld) larger then maximum number of open files (%ld)\n",
+	    "Warning: requested number of TCP connections (%u) larger then maximum number of open files (%ld)\n",
 	    nb_conn, limit_openfiles.rlim_cur);
   }
 
@@ -356,54 +382,58 @@ int main(int argc, char** argv)
   }
 
   /* Connect again, but using libevent, and multiple times. */
+  info("Opening %u connections to host %s port %s...\n", nb_conn, host_s, port_s);
   bufevents = malloc(nb_conn * sizeof(struct bufferevent*));
-  setups = malloc(nb_conn * sizeof(struct writecb_params));
-  for (conn = 0; conn < nb_conn; conn++) {
+  connections = malloc(nb_conn * sizeof(struct tcp_connection));
+  for (conn_id = 0; conn_id < nb_conn; conn_id++) {
     errno = 0;
-    bufevents[conn] = bufferevent_socket_new(base, -1, 0);
-    if (bufevents[conn] == NULL) {
+    bufevents[conn_id] = bufferevent_socket_new(base, -1, 0);
+    if (bufevents[conn_id] == NULL) {
       perror("Failed to create socket-based bufferevent");
       break;
     }
     errno = 0;
-    ret = bufferevent_socket_connect(bufevents[conn], (struct sockaddr*)server, server_len);
+    ret = bufferevent_socket_connect(bufevents[conn_id], (struct sockaddr*)server, server_len);
     if (ret != 0) {
       perror("Failed to connect to host with bufferevent");
-      bufferevent_free(bufevents[conn]);
-      bufevents[conn] = NULL;
+      bufferevent_free(bufevents[conn_id]);
+      bufevents[conn_id] = NULL;
       break;
     }
-    setups[conn].query_timestamps = malloc(max_queries_in_flight * sizeof(struct timespec));
-    bufferevent_setcb(bufevents[conn], readcb, NULL, eventcb, &setups[conn]);
-    bufferevent_enable(bufevents[conn], EV_READ|EV_WRITE);
+    connections[conn_id].connection_id = conn_id;
+    connections[conn_id].query_id = 0;
+    connections[conn_id].bev = bufevents[conn_id];
+    connections[conn_id].query_timestamps = malloc(max_queries_in_flight * sizeof(struct timespec));
+    bufferevent_setcb(bufevents[conn_id], readcb, NULL, eventcb, &connections[conn_id]);
+    bufferevent_enable(bufevents[conn_id], EV_READ|EV_WRITE);
 
     /* Progress output, roughly once per second */
-    if (conn % new_conn_rate == 0)
-      debug("Opened %ld connections so far...\n", conn);
+    if (conn_id % new_conn_rate == 0)
+      debug("Opened %ld connections so far...\n", conn_id);
 
     /* Wait a bit between each connection to avoid overwhelming the server. */
     usleep(new_conn_interval);
   }
-  info("Opened %ld connections to host %s port %s\n", conn, host_s, port_s);
+  info("Opened %ld connections to host %s port %s\n", conn_id, host_s, port_s);
 
   /* Leave some time for all connections to connect */
   sleep(3 + nb_conn / 5000);
 
-  info("Scheduling initial sending tasks according to a Poisson process...\n");
-  for (conn = 0; conn < nb_conn && bufevents[conn] != NULL; conn++) {
-    generate_poisson_interarrival(query_rate, &initial_timeout);
+  info("Starting %u Poisson processes generating queries...\n", nb_poisson_processes);
+  processes = malloc(nb_poisson_processes * sizeof(struct poisson_process));
+  for (process_id = 0; process_id < nb_poisson_processes; process_id++) {
+    generate_poisson_interarrival(poisson_rate, &initial_timeout);
     /* Add 5 seconds to avoid missing query deadline even before we start
        the event loop.  Without this, the first queries all go out at the
        same time, creating a large burst. */
     initial_timeout.tv_sec += 5;
     debug("initial timeout %ld s %ld us\n", initial_timeout.tv_sec, initial_timeout.tv_usec);
-    setups[conn].bev = bufevents[conn];
-    setups[conn].connection_id = conn;
-    setups[conn].query_id = 0;
-    setups[conn].write_event = event_new(base, -1, 0, writecb, &(setups[conn]));
-    ret = event_add(setups[conn].write_event, &initial_timeout);
+    processes[process_id].process_id = process_id;
+    processes[process_id].connections = connections;
+    processes[process_id].write_event = event_new(base, -1, 0, poisson_process_writecb, &(processes[process_id]));
+    ret = event_add(processes[process_id].write_event, &initial_timeout);
     if (ret != 0) {
-      fprintf(stderr, "Failed to add periodic sending task for connection %ld\n", conn);
+      fprintf(stderr, "Failed to start Poisson process %ld\n", process_id);
     }
   }
 
@@ -419,16 +449,22 @@ int main(int argc, char** argv)
   event_base_dispatch(base);
 
   /* Free all the things */
-  for (conn = 0; conn < nb_conn; conn++) {
-    if (bufevents[conn] == NULL)
+  for (conn_id = 0; conn_id < nb_conn; conn_id++) {
+    if (bufevents[conn_id] == NULL)
       break;
-    bufferevent_free(bufevents[conn]);
-    if (setups[conn].query_timestamps != NULL) {
-      free(setups[conn].query_timestamps);
+    bufferevent_free(bufevents[conn_id]);
+    if (connections[conn_id].query_timestamps != NULL) {
+      free(connections[conn_id].query_timestamps);
     }
   }
   free(bufevents);
-  free(setups);
+  free(connections);
+  for (process_id = 0; process_id < nb_poisson_processes; process_id++) {
+    if (processes[process_id].write_event != NULL) {
+      event_free(processes[process_id].write_event);
+    }
+  }
+  free(processes);
   event_base_free(base);
   return 0;
 }
