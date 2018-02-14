@@ -12,6 +12,8 @@
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <netdb.h>
 #include <time.h>
 
@@ -241,6 +243,8 @@ int main(int argc, char** argv)
   struct rlimit limit_openfiles;
   int server_len;
   int sock;
+  int bufev_fd;
+  int on = 1;
   int ret;
   int opt;
   unsigned long int global_query_rate = 0, duration = 0, new_conn_rate = 1000, random_seed = 42;
@@ -399,6 +403,13 @@ int main(int argc, char** argv)
       bufferevent_free(bufevents[conn_id]);
       bufevents[conn_id] = NULL;
       break;
+    }
+    /* Disable Nagle */
+    bufev_fd = bufferevent_getfd(bufevents[conn_id]);
+    if (bufev_fd == -1) {
+      info("Failed to disable Nagle on connection %ld (can't get file descriptor)\n", conn_id);
+    } else {
+      setsockopt(bufev_fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
     }
     connections[conn_id].connection_id = conn_id;
     connections[conn_id].query_id = 0;
