@@ -161,10 +161,11 @@ static void readcb(struct bufferevent *bev, void *ctx)
     if (print_rtt) {
       query_timestamp = &params->query_timestamps[query_id % max_queries_in_flight];
       subtract_timespec(&rtt, &now, query_timestamp);
-      /* CSV format: connection ID, timestamp at the time of reception
-	 (answer), computed RTT in µs */
-      printf("%u,%lu.%.9lu,%lu\n",
+      /* CSV format: type (Answer), connection ID, query ID, timestamp at
+	 the time of reception (answer), computed RTT in µs */
+      printf("A,%u,%u,,%lu.%.9lu,%lu\n",
 	     params->connection_id,
+	     query_id,
 	     now_realtime.tv_sec, now_realtime.tv_nsec,
 	     (rtt.tv_nsec / 1000) + (1000000 * rtt.tv_sec));
     }
@@ -197,6 +198,8 @@ static void send_query(struct tcp_connection* conn)
 static void poisson_process_writecb(evutil_socket_t fd, short events, void *ctx)
 {
   static struct timeval interval;
+  static struct timespec now_realtime;
+  struct tcp_connection *connection;
   struct poisson_process *params = ctx;
   /* Schedule next query */
   generate_poisson_interarrival(poisson_rate, &interval);
@@ -205,7 +208,18 @@ static void poisson_process_writecb(evutil_socket_t fd, short events, void *ctx)
     fprintf(stderr, "Failed to schedule next query (Poisson process %u)\n", params->process_id);
   }
   /* Select a TCP connection uniformly at random and send a query on it. */
-  send_query(&params->connections[lrand48() % nb_conn]);
+  connection = &params->connections[lrand48() % nb_conn];
+  if (print_rtt) {
+    clock_gettime(CLOCK_REALTIME, &now_realtime);
+    /* CSV format: type (Query), connection ID, query ID, Poisson ID, timestamp, poisson interval (in µs). */
+    printf("Q,%u,%u,%u,%lu.%.9lu,%lu\n",
+	   connection->connection_id,
+	   connection->query_id,
+	   params->process_id,
+	   now_realtime.tv_sec, now_realtime.tv_nsec,
+	   (1000000 * interval.tv_sec) + interval.tv_usec);
+  }
+  send_query(connection);
 }
 
 static void eventcb(struct bufferevent *bev, short events, void *ptr)
@@ -336,6 +350,11 @@ int main(int argc, char** argv)
 	    nb_conn, limit_openfiles.rlim_cur);
   }
 
+  if (print_rtt) {
+    printf("type,connection_id,query_id,poisson_id,timestamp,rtt_or_interval_us\n");
+  }
+
+  /* Connect to server */
   memset(&hints, 0, sizeof(struct addrinfo));
   hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
