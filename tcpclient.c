@@ -309,7 +309,7 @@ int main(int argc, char** argv)
   debug("max queries in flight (per conn): %hu\n", max_queries_in_flight);
 
   /* How many Poisson processes do we need. */
-  nb_poisson_processes = 1000 * global_query_rate / POISSON_PROCESS_PERIOD_MSEC;
+  nb_poisson_processes = POISSON_PROCESS_PERIOD_MSEC * global_query_rate / 1000;
   debug("Will spawn %d independent Poisson processes\n", nb_poisson_processes);
 
   /* Interval between two new connections, in microseconds. */
