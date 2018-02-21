@@ -244,6 +244,7 @@ void usage(char* progname) {
 int main(int argc, char** argv)
 {
   struct event_base *base;
+  struct event_config *ev_cfg;
   struct bufferevent **bufevents;
   struct addrinfo hints;
   struct addrinfo *res_list, *res;
@@ -398,9 +399,31 @@ int main(int argc, char** argv)
   server_len = res->ai_addrlen;
   freeaddrinfo(res_list);
 
-  base = event_base_new();
+  /* Create event base with custom options */
+  ev_cfg = event_config_new();
+  if (!ev_cfg) {
+    fprintf(stderr, "Couldn't allocate event base config\n");
+    return 1;
+  }
+  int flags = 0;
+  /* Small performance boost: locks are useless since we are not
+     multi-threaded. */
+  flags |= EVENT_BASE_FLAG_NOLOCK;
+  /* epoll performance improvement */
+  flags |= EVENT_BASE_FLAG_EPOLL_USE_CHANGELIST;
+  /* Prevent libevent from using CLOCK_MONOTONIC_COARSE (introduced in
+     libevent 2.1.5) */
+  if (LIBEVENT_VERSION_NUMBER >= 0x02010500) {
+    flags |= EVENT_BASE_FLAG_PRECISE_TIMER;
+  } else {
+    info("Warning: libevent before 2.1.5 has very low timer resolution (1 ms)\n");
+    info("Warning: You will likely obtain bursty request patterns\n");
+  }
+  event_config_set_flag(ev_cfg, flags);
+  base = event_base_new_with_config(ev_cfg);
+  event_config_free(ev_cfg);
   if (!base) {
-    fprintf(stderr, "Couldn't open event base\n");
+    fprintf(stderr, "Couldn't create event base\n");
     return 1;
   }
 
