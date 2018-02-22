@@ -161,12 +161,12 @@ static void readcb(struct bufferevent *bev, void *ctx)
     if (print_rtt) {
       query_timestamp = &params->query_timestamps[query_id % max_queries_in_flight];
       subtract_timespec(&rtt, &now, query_timestamp);
-      /* CSV format: type (Answer), connection ID, query ID, timestamp at
-	 the time of reception (answer), computed RTT in µs */
-      printf("A,%u,%u,,%lu.%.9lu,%lu\n",
+      /* CSV format: type (Answer), timestamp at the time of reception
+	 (answer), connection ID, query ID, unused, unused, computed RTT in µs */
+      printf("A,%lu.%.9lu,%u,%u,,,%lu\n",
+	     now_realtime.tv_sec, now_realtime.tv_nsec,
 	     params->connection_id,
 	     query_id,
-	     now_realtime.tv_sec, now_realtime.tv_nsec,
 	     (rtt.tv_nsec / 1000) + (1000000 * rtt.tv_sec));
     }
     /* Discard the DNS message (including the 2-bytes length prefix) */
@@ -211,12 +211,12 @@ static void poisson_process_writecb(evutil_socket_t fd, short events, void *ctx)
   connection = &params->connections[lrand48() % nb_conn];
   if (print_rtt) {
     clock_gettime(CLOCK_REALTIME, &now_realtime);
-    /* CSV format: type (Query), connection ID, query ID, Poisson ID, timestamp, poisson interval (in µs). */
-    printf("Q,%u,%u,%u,%lu.%.9lu,%lu\n",
+    /* CSV format: type (Query), timestamp, connection ID, query ID, Poisson ID, poisson interval (in µs), unused. */
+    printf("Q,%lu.%.9lu,%u,%u,%u,%lu,\n",
+	   now_realtime.tv_sec, now_realtime.tv_nsec,
 	   connection->connection_id,
 	   connection->query_id,
 	   params->process_id,
-	   now_realtime.tv_sec, now_realtime.tv_nsec,
 	   (1000000 * interval.tv_sec) + interval.tv_usec);
   }
   send_query(connection);
@@ -352,7 +352,7 @@ int main(int argc, char** argv)
   }
 
   if (print_rtt) {
-    printf("type,connection_id,query_id,poisson_id,timestamp,rtt_or_interval_us\n");
+    printf("type,timestamp,connection_id,query_id,poisson_id,poisson_interval_us,rtt_us\n");
   }
 
   /* Connect to server */
