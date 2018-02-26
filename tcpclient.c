@@ -318,10 +318,15 @@ int main(int argc, char** argv)
 
   srand48(random_seed);
 
-  /* Compute maximum number of queries in flight. */
-  double in_flight = (double) MAX_RTT_MSEC * (double) global_query_rate / (double) nb_conn / 1000.;
+  /* Compute maximum number of queries in flight.  Use a "safety factor"
+     of 8 to account for the worst case. */
+  double in_flight = 8 * (double) MAX_RTT_MSEC * (double) global_query_rate / (double) nb_conn / 1000.;
   if (in_flight > 65534) {
     max_queries_in_flight = 65535;
+  } else if (in_flight < 20) {
+    /* Use a minimum value to account for the worst case (burstiness on a
+       single TCP connection) */
+    max_queries_in_flight = 20;
   } else {
     max_queries_in_flight = ceil(in_flight);
   }
