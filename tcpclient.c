@@ -439,7 +439,7 @@ int main(int argc, char** argv)
   for (conn_id = 0; conn_id < nb_conn; conn_id++) {
     errno = 0;
     /* Create and connect socket */
-    sock = socket(server->ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    sock = socket(server->ss_family, SOCK_STREAM, 0);
     if (sock == -1) {
       perror("Failed to create socket");
       break;
@@ -447,6 +447,11 @@ int main(int argc, char** argv)
     ret = connect(sock, (struct sockaddr*)server, server_len);
     if (ret != 0) {
       perror("Failed to connect to host");
+      break;
+    }
+    ret = evutil_make_socket_nonblocking(sock);
+    if (ret != 0) {
+      perror("Failed to set socket to non-blocking mode");
       break;
     }
 
