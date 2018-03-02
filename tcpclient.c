@@ -438,17 +438,21 @@ int main(int argc, char** argv)
   connections = malloc(nb_conn * sizeof(struct tcp_connection));
   for (conn_id = 0; conn_id < nb_conn; conn_id++) {
     errno = 0;
-    bufevents[conn_id] = bufferevent_socket_new(base, -1, 0);
-    if (bufevents[conn_id] == NULL) {
-      perror("Failed to create socket-based bufferevent");
+    /* Create and connect socket */
+    sock = socket(server->ss_family, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (sock == -1) {
+      perror("Failed to create socket");
       break;
     }
-    errno = 0;
-    ret = bufferevent_socket_connect(bufevents[conn_id], (struct sockaddr*)server, server_len);
+    ret = connect(sock, (struct sockaddr*)server, server_len);
     if (ret != 0) {
-      perror("Failed to connect to host with bufferevent");
-      bufferevent_free(bufevents[conn_id]);
-      bufevents[conn_id] = NULL;
+      perror("Failed to connect to host");
+      break;
+    }
+
+    bufevents[conn_id] = bufferevent_socket_new(base, sock, 0);
+    if (bufevents[conn_id] == NULL) {
+      perror("Failed to create socket-based bufferevent");
       break;
     }
     /* Disable Nagle */
