@@ -1,6 +1,6 @@
 CFLAGS = -Wall
 
-all: tcpserver tcpclient
+all: tcpserver tcpclient udpclient
 
 tcpserver: tcpserver.o
 	$(CC) -levent -o $@ $<
@@ -8,5 +8,8 @@ tcpserver: tcpserver.o
 tcpclient: tcpclient.o
 	$(CC) -levent -lm -o $@ $<
 
+udpclient: udpclient.o
+	$(CC) -levent -lm -o $@ $<
+
 clean:
-	rm -f *.o tcpserver tcpclient
+	rm -f *.o tcpserver tcpclient udpclient
