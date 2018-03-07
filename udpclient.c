@@ -390,12 +390,12 @@ int main(int argc, char** argv)
   flags |= EVENT_BASE_FLAG_EPOLL_USE_CHANGELIST;
   /* Prevent libevent from using CLOCK_MONOTONIC_COARSE (introduced in
      libevent 2.1.5) */
-  if (LIBEVENT_VERSION_NUMBER >= 0x02010500) {
+#if LIBEVENT_VERSION_NUMBER >= 0x02010500
     flags |= EVENT_BASE_FLAG_PRECISE_TIMER;
-  } else {
+#else
     info("Warning: libevent before 2.1.5 has very low timer resolution (1 ms)\n");
     info("Warning: You will likely obtain bursty request patterns\n");
-  }
+#endif
   event_config_set_flag(ev_cfg, flags);
   base = event_base_new_with_config(ev_cfg);
   event_config_free(ev_cfg);
