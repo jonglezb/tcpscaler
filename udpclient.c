@@ -43,7 +43,7 @@ static void ev_callback(evutil_socket_t fd, short events, void *ctx)
 {
   static char buf[256];
   if ((events & EV_READ) == 0) {
-    fprintf(stderr, "Warning: unexpected event on connection callback\n");
+    info("Warning: unexpected event on connection callback\n");
     return;
   }
   struct udp_connection *conn = ctx;
@@ -185,7 +185,7 @@ int main(int argc, char** argv)
       nb_conn = strtoul(optarg, NULL, 10);
       break;
     case 'n': /* Rate of new connections (#/sec) */
-      fprintf(stderr, "Warning: option -n ignored for UDP\n");
+      info("Warning: option -n ignored for UDP\n");
       break;
     case 'v': /* verbose */
       verbose += 1;
