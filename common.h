@@ -51,7 +51,7 @@ static uint32_t nb_conn = 0;
 
 /* Given a [rate], generate an interarrival sample according to a Poisson
    process and store it in [tv]. */
-void generate_poisson_interarrival(double rate, struct timeval* tv)
+void generate_poisson_interarrival(struct timeval* tv, double rate)
 {
   double u = drand48();
   double interarrival = - log(1. - u) / rate;

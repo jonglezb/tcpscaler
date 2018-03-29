@@ -112,7 +112,7 @@ static void poisson_process_writecb(evutil_socket_t fd, short events, void *ctx)
   struct udp_connection *connection;
   struct poisson_process *params = ctx;
   /* Schedule next query */
-  generate_poisson_interarrival(poisson_rate, &interval);
+  generate_poisson_interarrival(&interval, poisson_rate);
   int ret = event_add(params->write_event, &interval);
   if (ret != 0) {
     fprintf(stderr, "Failed to schedule next query (Poisson process %u)\n", params->process_id);
@@ -362,7 +362,7 @@ int main(int argc, char** argv)
   info("Starting %u Poisson processes generating queries...\n", nb_poisson_processes);
   processes = malloc(nb_poisson_processes * sizeof(struct poisson_process));
   for (process_id = 0; process_id < nb_poisson_processes; process_id++) {
-    generate_poisson_interarrival(poisson_rate, &initial_timeout);
+    generate_poisson_interarrival(&initial_timeout, poisson_rate);
     /* Add 5 seconds to avoid missing query deadline even before we start
        the event loop.  Without this, the first queries all go out at the
        same time, creating a large burst. */
