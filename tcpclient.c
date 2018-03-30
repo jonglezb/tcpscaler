@@ -432,7 +432,8 @@ int main(int argc, char** argv)
   /* Schedule stop event. */
   if (duration > 0) {
     info("Scheduling stop event in %ld seconds.\n", duration);
-    duration_timeval.tv_sec = duration;
+    /* Account for the 5 seconds delay on all events */
+    duration_timeval.tv_sec = 5 + duration;
     duration_timeval.tv_usec = 0;
     event_base_loopexit(base, &duration_timeval);
   }
