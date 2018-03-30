@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <getopt.h>
 #include <string.h>
 #include <errno.h>
 #include <math.h>
@@ -155,7 +156,7 @@ static void eventcb(struct bufferevent *bev, short events, void *ptr)
 }
 
 void usage(char* progname) {
-  fprintf(stderr, "usage: %s [-h] [-v] [-R] [-s random_seed] [-t duration]  [-n new_conn_rate]  -p <port>  -r <rate>  -c <nb_conn>  <host>\n",
+  fprintf(stderr, "usage: %s [-h] [-v] [-R] [-s random_seed] [-t duration]  [--stdin]  [-n new_conn_rate]  -p <port>  -r <rate>  -c <nb_conn>  <host>\n",
 	  progname);
   fprintf(stderr, "Connects to the specified host and port, with the chosen number of TCP connections.\n");
   fprintf(stderr, "[rate] is the total number of writes per second towards the server, accross all TCP connections.\n");
@@ -163,6 +164,8 @@ void usage(char* progname) {
   fprintf(stderr, "[new_conn_rate] is the number of new connections to open per second when starting the client.\n");
   fprintf(stderr, "With option '-R', print RTT samples as CSV: connection ID, reception timestamp, RTT in microseconds.\n");
   fprintf(stderr, "With option '-t', only send queries for the given amount of seconds.\n");
+  fprintf(stderr, "With option '--stdin', the program ignores 'rate' and 'duration' and expects them\n");
+  fprintf(stderr, "to be given on stdin as a sequence of '<duration_ms> <rate>' lines, with a first line giving the number of subsequent lines.\n");
   fprintf(stderr, "Option '-s' allows to choose a random seed (unsigned int) to determine times of transmission.  By default, the seed is set to 42\n");
 }
 
@@ -180,6 +183,13 @@ int main(int argc, char** argv)
   struct tcp_connection *connections;
   /* Array of all Poisson processes */
   struct poisson_process *processes;
+  /* Optional stdin-based commands */
+  unsigned int nb_commands;
+  struct command *commands;
+  struct event *change_rate_ev;
+  unsigned int min_query_rate = 0xffffffff;
+  unsigned int max_query_rate = 0;
+  /* Used to change the limit of open files */
   struct rlimit limit_openfiles;
   int server_len;
   int sock;
@@ -187,7 +197,7 @@ int main(int argc, char** argv)
   int on = 1;
   int ret;
   int opt;
-  unsigned long int global_query_rate = 0, duration = 0, new_conn_rate = 1000, random_seed = 42;
+  unsigned long int duration = 0, new_conn_rate = 1000, random_seed = 42;
   unsigned long int new_conn_interval;
   unsigned long int conn_id, process_id;
   char *host = NULL, *port = NULL;
@@ -198,13 +208,24 @@ int main(int argc, char** argv)
   print_rtt = 0;
 
   /* Start with options */
-  while ((opt = getopt(argc, argv, "p:r:c:n:vRs:t:h")) != -1) {
+  int option_index = -1;
+  static struct option long_options[] = {
+    {"stdin", no_argument, NULL, 0},
+    {NULL,    0,           NULL, 0}
+  };
+  while ((opt = getopt_long(argc, argv, "p:r:c:n:vRs:t:h", long_options, &option_index)) != -1) {
     switch (opt) {
+    case 0: /* long option */
+      if (option_index == 0) { /* --stdin */
+	stdin_commands = 1;
+      }
+      break;
     case 'p': /* TCP port */
       port = optarg;
       break;
     case 'r': /* Sending rate */
-      global_query_rate = strtoul(optarg, NULL, 10);
+      min_query_rate = strtoul(optarg, NULL, 10);
+      max_query_rate = min_query_rate;
       break;
     case 'c': /* Number of TCP connections */
       nb_conn = strtoul(optarg, NULL, 10);
@@ -234,18 +255,36 @@ int main(int argc, char** argv)
     }
   }
 
-  if (optind >= argc || port == NULL || global_query_rate == 0 || nb_conn == 0) {
+  if (optind >= argc || port == NULL || (max_query_rate == 0 && stdin_commands == 0) || nb_conn == 0) {
     fprintf(stderr, "Error: missing mandatory arguments\n");
+    usage(argv[0]);
+    return 1;
+  }
+  if (stdin_commands == 1 && (duration != 0 || max_query_rate != 0)) {
+    fprintf(stderr, "Error: --stdin is not compatible with -t and -r\n");
     usage(argv[0]);
     return 1;
   }
   host = argv[optind];
 
+  if (stdin_commands == 1) {
+    ret = read_nb_commands(&nb_commands);
+    if (ret == -1)
+      return ret;
+    /* Read commands */
+    commands = calloc(nb_commands, sizeof(struct command));
+    ret = read_commands(commands, &min_query_rate, &max_query_rate, nb_commands);
+    if (ret == -1)
+      return ret;
+    debug("Minimum query rate: %u\n", min_query_rate);
+    debug("Maximum query rate: %u\n", max_query_rate);
+  }
+
   srand48(random_seed);
 
   /* Compute maximum number of queries in flight.  Use a "safety factor"
      of 8 to account for the worst case. */
-  double in_flight = 8 * (double) MAX_RTT_MSEC * (double) global_query_rate / (double) nb_conn / 1000.;
+  double in_flight = 8 * (double) MAX_RTT_MSEC * (double) max_query_rate / (double) nb_conn / 1000.;
   if (in_flight > 65534) {
     max_queries_in_flight = 65535;
   } else if (in_flight < 20) {
@@ -258,8 +297,14 @@ int main(int argc, char** argv)
   debug("max queries in flight (per conn): %hu\n", max_queries_in_flight);
 
   /* How many Poisson processes do we need. */
-  nb_poisson_processes = POISSON_PROCESS_PERIOD_MSEC * global_query_rate / 1000;
+  nb_poisson_processes = POISSON_PROCESS_PERIOD_MSEC * min_query_rate / 1000;
   debug("Will spawn %d independent Poisson processes\n", nb_poisson_processes);
+
+  if (stdin_commands == 1) {
+    /* Set initial rate for each Poisson process */
+    poisson_rate = (double) commands[0].query_rate / (double) nb_poisson_processes;
+    info("Initial Poisson rate: %f\n", poisson_rate);
+  }
 
   /* Interval between two new connections, in microseconds. */
   new_conn_interval = 1000000 / new_conn_rate;
@@ -438,10 +483,26 @@ int main(int argc, char** argv)
     event_base_loopexit(base, &duration_timeval);
   }
 
+  /* Schedule changes of query rate. */
+  if (stdin_commands == 1) {
+    debug("Scheduling query rate changes according to stdin commands.\n");
+    /* Accounts for 5-seconds delay on all events */
+    struct timeval delay_timeval = {5, 0};
+    for (int i = 0; i < nb_commands; ++i) {
+      change_rate_ev = event_new(base, -1, 0, change_query_rate, &commands[i].query_rate);
+      event_add(change_rate_ev, &delay_timeval);
+      timeval_add_ms(&delay_timeval, commands[i].duration_ms);
+    }
+    event_base_loopexit(base, &delay_timeval);
+  }
+
   info("Starting event loop\n");
   event_base_dispatch(base);
 
   /* Free all the things */
+  if (stdin_commands == 1) {
+    free(commands);
+  }
   for (conn_id = 0; conn_id < nb_conn; conn_id++) {
     if (bufevents[conn_id] == NULL)
       break;
