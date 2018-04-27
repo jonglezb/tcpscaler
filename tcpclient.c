@@ -156,7 +156,7 @@ static void eventcb(struct bufferevent *bev, short events, void *ptr)
 }
 
 void usage(char* progname) {
-  fprintf(stderr, "usage: %s [-h] [-v] [-R] [-s random_seed] [-t duration]  [--stdin]  [-n new_conn_rate]  -p <port>  -r <rate>  -c <nb_conn>  <host>\n",
+  fprintf(stderr, "usage: %s [-h] [-v] [-R] [-s random_seed] [-t duration]  [--stdin]  [--stdin-rateslope]  [-n new_conn_rate]  -p <port>  -r <rate>  -c <nb_conn>  <host>\n",
 	  progname);
   fprintf(stderr, "Connects to the specified host and port, with the chosen number of TCP connections.\n");
   fprintf(stderr, "[rate] is the total number of writes per second towards the server, accross all TCP connections.\n");
@@ -166,12 +166,15 @@ void usage(char* progname) {
   fprintf(stderr, "With option '-t', only send queries for the given amount of seconds.\n");
   fprintf(stderr, "With option '--stdin', the program ignores 'rate' and 'duration' and expects them\n");
   fprintf(stderr, "to be given on stdin as a sequence of '<duration_ms> <rate>' lines, with a first line giving the number of subsequent lines.\n");
+  fprintf(stderr, "With option '--stdin-rateslope', the program starts from 'rate' qps, and expects\n");
+  fprintf(stderr, "a sequence of '<duration_ms> <slope>' lines to be given on stdin, where each\n");
+  fprintf(stderr, "'slope' in qps/s indicates how much to increase or decrease the query rate. The first line\n");
+  fprintf(stderr, "must give the number of subsequent lines.\n");
   fprintf(stderr, "Option '-s' allows to choose a random seed (unsigned int) to determine times of transmission.  By default, the seed is set to 42\n");
 }
 
 int main(int argc, char** argv)
 {
-  struct event_base *base;
   struct event_config *ev_cfg;
   struct bufferevent **bufevents;
   struct addrinfo hints;
@@ -186,7 +189,7 @@ int main(int argc, char** argv)
   /* Optional stdin-based commands */
   unsigned int nb_commands;
   struct command *commands;
-  struct event *change_rate_ev;
+  struct rateslope_command *rateslope_commands;
   unsigned int min_query_rate = 0xffffffff;
   unsigned int max_query_rate = 0;
   /* Used to change the limit of open files */
@@ -210,14 +213,18 @@ int main(int argc, char** argv)
   /* Start with options */
   int option_index = -1;
   static struct option long_options[] = {
-    {"stdin", no_argument, NULL, 0},
-    {NULL,    0,           NULL, 0}
+    {"stdin",            no_argument, NULL, 0},
+    {"stdin-rateslope", no_argument, NULL, 0},
+    {NULL,               0,           NULL, 0}
   };
   while ((opt = getopt_long(argc, argv, "p:r:c:n:vRs:t:h", long_options, &option_index)) != -1) {
     switch (opt) {
     case 0: /* long option */
       if (option_index == 0) { /* --stdin */
 	stdin_commands = 1;
+      }
+      if (option_index == 1) { /* --stdin-rateslope */
+	stdin_rateslope_commands = 1;
       }
       break;
     case 'p': /* TCP port */
@@ -260,8 +267,13 @@ int main(int argc, char** argv)
     usage(argv[0]);
     return 1;
   }
-  if (stdin_commands == 1 && (duration != 0 || max_query_rate != 0)) {
-    fprintf(stderr, "Error: --stdin is not compatible with -t and -r\n");
+  if (stdin_commands == 1 && (duration != 0 || max_query_rate != 0 || stdin_rateslope_commands != 0)) {
+    fprintf(stderr, "Error: --stdin is not compatible with -t, -r, or --stdin-rateslope\n");
+    usage(argv[0]);
+    return 1;
+  }
+  if (stdin_rateslope_commands == 1 && (duration != 0 || stdin_commands != 0)) {
+    fprintf(stderr, "Error: --stdin-rateslope is not compatible with -t, or --stdin\n");
     usage(argv[0]);
     return 1;
   }
@@ -278,6 +290,16 @@ int main(int argc, char** argv)
       return ret;
     debug("Minimum query rate: %u\n", min_query_rate);
     debug("Maximum query rate: %u\n", max_query_rate);
+  }
+  else if (stdin_rateslope_commands == 1) {
+    ret = read_nb_commands(&nb_commands);
+    if (ret == -1)
+      return ret;
+    /* Read "rate slope change" commands */
+    rateslope_commands = calloc(nb_commands, sizeof(struct rateslope_command));
+    ret = read_rateslope_commands(rateslope_commands, nb_commands);
+    if (ret == -1)
+      return ret;
   }
 
   srand48(random_seed);
@@ -488,10 +510,25 @@ int main(int argc, char** argv)
     debug("Scheduling query rate changes according to stdin commands.\n");
     /* Accounts for 5-seconds delay on all events */
     struct timeval delay_timeval = {5, 0};
+    struct event *change_rate_ev;
     for (int i = 0; i < nb_commands; ++i) {
       change_rate_ev = event_new(base, -1, 0, change_query_rate, &commands[i].query_rate);
       event_add(change_rate_ev, &delay_timeval);
       timeval_add_ms(&delay_timeval, commands[i].duration_ms);
+    }
+    event_base_loopexit(base, &delay_timeval);
+  }
+
+  /* Schedule changes of query rate slope. */
+  if (stdin_rateslope_commands == 1) {
+    debug("Scheduling query rate slope changes according to stdin commands.\n");
+    /* Accounts for 5-seconds delay on all events */
+    struct timeval delay_timeval = {5, 0};
+    struct event *change_rate_slope_ev;
+    for (int i = 0; i < nb_commands; ++i) {
+      change_rate_slope_ev = event_new(base, -1, 0, change_query_rate_slope, &rateslope_commands[i]);
+      event_add(change_rate_slope_ev, &delay_timeval);
+      timeval_add_ms(&delay_timeval, rateslope_commands[i].duration_ms);
     }
     event_base_loopexit(base, &delay_timeval);
   }
@@ -502,6 +539,9 @@ int main(int argc, char** argv)
   /* Free all the things */
   if (stdin_commands == 1) {
     free(commands);
+  }
+  if (stdin_rateslope_commands == 1) {
+    free(rateslope_commands);
   }
   for (conn_id = 0; conn_id < nb_conn; conn_id++) {
     if (bufevents[conn_id] == NULL)

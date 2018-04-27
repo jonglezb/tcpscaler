@@ -52,3 +52,22 @@ void timeval_add_ms(struct timeval *a, unsigned int ms)
     a->tv_usec -= 1000000L;
   }
 }
+
+void timeval_add_us(struct timeval *a, unsigned long int us)
+{
+  a->tv_usec += us;
+  while (a->tv_usec >= 1000000L) {
+    a->tv_sec += 1;
+    a->tv_usec -= 1000000L;
+  }
+}
+
+/* Returns the integer that is closest to a/b */
+static inline int divide_closest(int a, int b)
+{
+  int ret = a / b;
+  /* Works for both positive and negative numbers */
+  if (2 * (a % b) >= b)
+    ret += 1;
+  return ret;
+}
