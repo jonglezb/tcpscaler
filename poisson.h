@@ -42,3 +42,5 @@ int poisson_set_rate(unsigned int process_id, double poisson_rate);
 /* Starts the process.  If [initial_delay] is NULL, generate an initial
    delay according to the poisson process. */
 int poisson_start_process(unsigned int process_id, struct timeval* initial_delay);
+
+unsigned int poisson_nb_processes();

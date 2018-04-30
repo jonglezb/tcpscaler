@@ -141,3 +141,10 @@ int poisson_start_process(unsigned int process_id, struct timeval* initial_delay
     return event_add(proc->event, &poisson_delay);
   }
 }
+
+unsigned int poisson_nb_processes()
+{
+  if (_next_process_id == 0)
+    return 0;
+  return _next_process_id - 1;
+}
