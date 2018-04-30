@@ -9,7 +9,7 @@ udpclient.o: udpclient.c common.h utils.h
 tcpserver: tcpserver.o
 	$(CC) -levent -o $@ $<
 
-tcpclient: tcpclient.o
+tcpclient: tcpclient.o poisson.o
 	$(CC) -levent -lm -o $@ $<
 
 udpclient: udpclient.o
