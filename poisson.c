@@ -32,6 +32,23 @@ static int _increase_processes(size_t new_size)
   return 0;
 }
 
+static void poisson_event(evutil_socket_t fd, short events, void *ctx)
+{
+  unsigned int process_id = ctx;
+  struct poisson_process *proc = _get_process(process_id);
+  static struct timeval interval;
+  /* Schedule next query */
+  generate_poisson_interarrival(&interval, proc->rate);
+  int ret = event_add(proc->event, &interval);
+  if (ret != 0) {
+    fprintf(stderr, "Failed to schedule next query (Poisson process %u)\n", proc->process_id);
+  }
+  /* Run user-provided callback function */
+  if (proc->callback != NULL) {
+    proc->callback(proc->callback_arg);
+  }
+}
+
 
 /* Initialize the Poisson framework.  The number of Poisson processes is
    indicative, and should be set to the expected number of processes to
@@ -65,7 +82,7 @@ unsigned int poisson_new(struct event_base *base)
   proc->rate = 1.;
   proc->callback = NULL;
   proc->callback_arg = NULL;
-  proc->event = NULL;
+  proc->event = event_new(proc->evbase, -1, 0, poisson_event, process_id);
   _next_process_id++;
   return process_id;
 }
@@ -87,15 +104,14 @@ int poisson_remove()
 }
 
 /* Sets the callback that will be called at Poisson-spaced time intervals */
-int poisson_set_callback(unsigned int process_id, event_callback_fn callback, void* callback_arg)
+int poisson_set_callback(unsigned int process_id, callback_fn callback, void* callback_arg)
 {
-  struct event* callback_event;
   struct poisson_process *proc = _get_process(process_id);
   if (proc == NULL) {
     return -1;
   }
-  callback_event = event_new(proc->evbase, -1, 0, callback, callback_arg);
-  proc->event = callback_event;
+  proc->callback = callback;
+  proc->callback_arg = callback_arg;
   return 0;
 }
 

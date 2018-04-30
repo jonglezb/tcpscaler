@@ -2,11 +2,13 @@
 #include <event2/event.h>
 #include <event2/bufferevent.h>
 
+typedef void (*callback_fn)(void *);
+
 struct poisson_process {
   /* ID of the Poisson process, mostly for logging purpose. */
   uint32_t process_id;
   /* User-defined callback and argument */
-  event_callback_fn callback;
+  callback_fn callback;
   void* callback_arg;
   /* Used to schedule the next event for this Poisson process. */
   struct event* event;
@@ -33,7 +35,7 @@ unsigned int poisson_new(struct event_base *base);
 int poisson_remove();
 
 /* Sets the callback that will be called at Poisson-spaced time intervals */
-int poisson_set_callback(unsigned int process_id, event_callback_fn callback, void* callback_arg);
+int poisson_set_callback(unsigned int process_id, callback_fn callback, void* callback_arg);
 
 int poisson_set_rate(unsigned int process_id, double poisson_rate);
 
