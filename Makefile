@@ -1,6 +1,6 @@
 CFLAGS = -Wall
 
-all: tcpserver tcpclient udpclient
+all: tcpclient
 
 tcpclient.o: tcpclient.c common.h utils.h
 
