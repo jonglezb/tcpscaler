@@ -1,4 +1,6 @@
 #include <time.h>
+#include <math.h>
+#include <stdlib.h>
 
 /* Copied from babeld by Juliusz Chroboczek */
 #define DO_NTOHS(_d, _s) \
@@ -27,41 +29,6 @@
 #define debug(...) \
             do { if (verbose >= 2) fprintf(stderr, __VA_ARGS__); } while (0)
 
-void subtract_timespec(struct timespec *result, const struct timespec *a, const struct timespec *b)
-{
-  if ((a->tv_sec < b->tv_sec) ||
-      ((a->tv_sec == b->tv_sec) &&
-       (a->tv_nsec <= b->tv_nsec))) {		/* TIME1 <= TIME2? */
-    result->tv_sec = result->tv_nsec = 0 ;
-  } else {						/* TIME1 > TIME2 */
-    result->tv_sec = a->tv_sec - b->tv_sec ;
-    if (a->tv_nsec < b->tv_nsec) {
-      result->tv_nsec = a->tv_nsec + 1000000000L - b->tv_nsec ;
-      result->tv_sec-- ;				/* Borrow a second. */
-    } else {
-      result->tv_nsec = a->tv_nsec - b->tv_nsec ;
-    }
-  }
-}
-
-void timeval_add_ms(struct timeval *a, unsigned int ms)
-{
-  a->tv_usec += ms * 1000;
-  while (a->tv_usec >= 1000000L) {
-    a->tv_sec += 1;
-    a->tv_usec -= 1000000L;
-  }
-}
-
-void timeval_add_us(struct timeval *a, unsigned long int us)
-{
-  a->tv_usec += us;
-  while (a->tv_usec >= 1000000L) {
-    a->tv_sec += 1;
-    a->tv_usec -= 1000000L;
-  }
-}
-
 /* Returns the integer that is closest to a/b */
 static inline int divide_closest(int a, int b)
 {
@@ -71,3 +38,13 @@ static inline int divide_closest(int a, int b)
     ret += 1;
   return ret;
 }
+
+void subtract_timespec(struct timespec *result, const struct timespec *a, const struct timespec *b);
+
+void timeval_add_ms(struct timeval *a, unsigned int ms);
+
+void timeval_add_us(struct timeval *a, unsigned long int us);
+
+/* Given a [rate], generate an interarrival sample according to a Poisson
+   process and store it in [tv]. */
+void generate_poisson_interarrival(struct timeval* tv, double rate);
