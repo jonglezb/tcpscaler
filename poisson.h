@@ -24,15 +24,15 @@ struct poisson_process {
    avoid needless memory reallocations. */
 int poisson_init(size_t nb_poisson_processes);
 
-/* Stops all events and frees all dat astructures. */
-void poisson_destroy();
+/* Stop all events, and optionally free all callback arguments. */
+void poisson_destroy(char free_callback_args);
 
 /* Returns a newly created Poisson process, or NULL in case of failure. */
 struct poisson_process* poisson_new(struct event_base *base);
 
-/* Remove a poisson process, and free its callback event. Returns the
-   process ID of the removed process, or -1 if none exists. */
-int poisson_remove();
+/* Remove a poisson process, and optionally free the callback argument.
+   Returns the process ID of the removed process, or -1 if none exists. */
+int poisson_remove(char free_callback_arg);
 
 /* Sets the callback that will be called at Poisson-spaced time intervals */
 int poisson_set_callback(struct poisson_process* process, callback_fn callback, void* callback_arg);

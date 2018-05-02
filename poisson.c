@@ -61,10 +61,10 @@ int poisson_init(size_t nb_poisson_processes)
   return (_processes != NULL);
 }
 
-/* Stops all events and frees all datastructures. */
-void poisson_destroy()
+/* Stop all events, and optionally free all callback arguments. */
+void poisson_destroy(char free_callback_args)
 {
-  while (poisson_remove() != -1);
+  while (poisson_remove(free_callback_args) != -1);
   free(_processes);
 }
 
@@ -91,9 +91,9 @@ struct poisson_process* poisson_new(struct event_base *base)
   return proc;
 }
 
-/* Remove a poisson process, and free its callback event. Returns the
-   process ID of the removed process, or -1 if none exists. */
-int poisson_remove()
+/* Remove a poisson process, and optionally free the callback argument.
+   Returns the process ID of the removed process, or -1 if none exists. */
+int poisson_remove(char free_callback_arg)
 {
   struct poisson_process *proc;
   if (_next_process_id == 0)
@@ -102,6 +102,9 @@ int poisson_remove()
   proc = _get_process(_next_process_id);
   if (proc == NULL) {
     return -1;
+  }
+  if (free_callback_arg && proc->callback_arg != NULL) {
+    free(proc->callback_arg);
   }
   if (proc->event != NULL) {
     event_del(proc->event);
