@@ -98,8 +98,8 @@ int poisson_remove(char free_callback_arg)
   struct poisson_process *proc;
   if (_next_process_id == 0)
     return -1;
-  _next_process_id--;
-  proc = _get_process(_next_process_id);
+  int process_id = _next_process_id - 1;
+  proc = _get_process(process_id);
   if (proc == NULL) {
     return -1;
   }
@@ -111,7 +111,8 @@ int poisson_remove(char free_callback_arg)
     event_free(proc->event);
   }
   free(proc);
-  return _next_process_id;
+  _next_process_id--;
+  return process_id;
 }
 
 /* Sets the callback that will be called at Poisson-spaced time intervals */
