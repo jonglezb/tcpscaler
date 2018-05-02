@@ -1,3 +1,4 @@
+#include "poisson.h"
 #include "utils.h"
 
 /* Maximum expected response time for a query.  This is used to compute
@@ -36,8 +37,7 @@ static short stdin_rateslope_commands;
 /* Maximum number of queries "in flight" on a given UDP or TCP connection.
    Computed from MAX_RTT, rate, and nb_conn. */
 static uint16_t max_queries_in_flight;
-/* How many Poisson processes we are running in parallel, and at which rate. */
-static uint32_t nb_poisson_processes = 0;
+/* Sending rate of each Poisson process. */
 static double poisson_rate = 1000. / (double) POISSON_PROCESS_PERIOD_MSEC;
 /* How many UDP or TCP connections we maintain. */
 static uint32_t nb_conn = 0;
@@ -54,6 +54,7 @@ struct rateslope_command {
   int query_rate_slope;
 };
 
+static void add_poisson_sender();
 
 int read_nb_commands(unsigned int *nb_commands)
 {
@@ -109,7 +110,8 @@ int read_rateslope_commands(struct rateslope_command *commands, unsigned int nb_
 static void change_query_rate(evutil_socket_t fd, short events, void *ctx)
 {
   unsigned int *new_rate = ctx;
-  poisson_rate = (double) *new_rate / (double) nb_poisson_processes;
+  poisson_rate = (double) *new_rate / (double) poisson_nb_processes();
+  /* TODO: apply this rate to all processes. */
   info("Changed Poisson rate to %f\n", poisson_rate);
 }
 
@@ -127,9 +129,15 @@ static void add_remove_poisson_processes(evutil_socket_t fd, short events, void 
   int *nb_poisson_change = ctx;
   if (*nb_poisson_change > 0) {
     debug("Adding %d poisson processes\n", *nb_poisson_change);
+    for (int i = 0; i < *nb_poisson_change; i++) {
+      add_poisson_sender();
+    }
   }
   if (*nb_poisson_change < 0) {
     debug("Removing %d poisson processes\n", -(*nb_poisson_change));
+    for (int i = 0; i < -(*nb_poisson_change); i++) {
+      poisson_remove(1);
+    }
   }
 }
 
@@ -158,7 +166,7 @@ static void change_query_rate_slope(evutil_socket_t fd, short events, void *ctx)
      reach a slope of +42 qps/s, we add 4 poisson processes every 95.2 ms. */
   *nb_poisson_change = divide_closest(command->query_rate_slope * RATE_SLOPE_UPDATE_INTERVAL_MSEC, 1000);
   if (*nb_poisson_change == 0)
-    *nb_poisson_change = 1;
+    *nb_poisson_change = command->query_rate_slope > 0 ? 1 : -1;
   repeat_interval_us = 1000 * 1000 * (*nb_poisson_change) / command->query_rate_slope;
   info("Changing query rate slope to %d qps/s (%d Poisson processes every %lu.%.3lu ms)\n",
        command->query_rate_slope,
@@ -173,14 +181,4 @@ static void change_query_rate_slope(evutil_socket_t fd, short events, void *ctx)
   timeval_add_ms(&stop_delay, command->duration_ms);
   event_add(stop_ev, &stop_delay);
   /* TODO: where should we free stop_ev? */
-}
-
-/* Given a [rate], generate an interarrival sample according to a Poisson
-   process and store it in [tv]. */
-void generate_poisson_interarrival(struct timeval* tv, double rate)
-{
-  double u = drand48();
-  double interarrival = - log(1. - u) / rate;
-  tv->tv_sec = (time_t) floor(interarrival);
-  tv->tv_usec = lrint(interarrival * 1000000.) % 1000000;
 }
