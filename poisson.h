@@ -27,20 +27,20 @@ int poisson_init(size_t nb_poisson_processes);
 /* Stops all events and frees all dat astructures. */
 void poisson_destroy();
 
-/* Returns the process ID of the newly created Poisson process */
-unsigned int poisson_new(struct event_base *base);
+/* Returns a newly created Poisson process, or NULL in case of failure. */
+struct poisson_process* poisson_new(struct event_base *base);
 
 /* Remove a poisson process, and free its callback event. Returns the
    process ID of the removed process, or -1 if none exists. */
 int poisson_remove();
 
 /* Sets the callback that will be called at Poisson-spaced time intervals */
-int poisson_set_callback(unsigned int process_id, callback_fn callback, void* callback_arg);
+int poisson_set_callback(struct poisson_process* process, callback_fn callback, void* callback_arg);
 
-int poisson_set_rate(unsigned int process_id, double poisson_rate);
+int poisson_set_rate(struct poisson_process* process, double poisson_rate);
 
 /* Starts the process.  If [initial_delay] is NULL, generate an initial
    delay according to the poisson process. */
-int poisson_start_process(unsigned int process_id, struct timeval* initial_delay);
+int poisson_start_process(struct poisson_process* process, struct timeval* initial_delay);
 
 unsigned int poisson_nb_processes();
