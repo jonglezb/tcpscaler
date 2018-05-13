@@ -1,6 +1,6 @@
 CFLAGS = -Wall
 
-all: tcpclient
+all: tcpclient udpclient
 
 tcpclient.o: tcpclient.c common.h utils.h
 
@@ -13,7 +13,7 @@ tcpclient: tcpclient.o poisson.o utils.o
 	$(CC) -levent -lm -o $@ poisson.o utils.o $<
 
 udpclient: udpclient.o
-	$(CC) -levent -lm -o $@ $<
+	$(CC) -levent -lm -o $@ poisson.o utils.o $<
 
 clean:
 	rm -f *.o tcpserver tcpclient udpclient

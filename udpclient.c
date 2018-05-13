@@ -31,14 +31,13 @@ struct udp_connection {
   struct timespec* query_timestamps;
 };
 
-struct poisson_process {
-  /* ID of the Poisson process, mostly for logging purpose. */
-  uint32_t process_id;
-  /* Used to schedule the next event for this Poisson process. */
-  struct event* write_event;
-  /* Array of all UDP connections. */
+struct callback_data {
+  struct poisson_process* process;
   struct udp_connection* connections;
 };
+
+/* Array of all UDP connections */
+struct udp_connection *connections;
 
 static void ev_callback(evutil_socket_t fd, short events, void *ctx)
 {
@@ -106,35 +105,41 @@ static void send_query(struct udp_connection* conn)
   conn->query_id += 1;
 }
 
-static void poisson_process_writecb(evutil_socket_t fd, short events, void *ctx)
+static void send_query_callback(void *ctx)
 {
-  static struct timeval interval;
   static struct timespec now_realtime;
   struct udp_connection *connection;
-  struct poisson_process *params = ctx;
-  /* Schedule next query */
-  generate_poisson_interarrival(&interval, poisson_rate);
-  int ret = event_add(params->write_event, &interval);
-  if (ret != 0) {
-    fprintf(stderr, "Failed to schedule next query (Poisson process %u)\n", params->process_id);
-  }
+  struct callback_data *data = ctx;
   /* Select a UDP connection uniformly at random and send a query on it. */
-  connection = &params->connections[lrand48() % nb_conn];
+  connection = &data->connections[lrand48() % nb_conn];
   if (print_rtt) {
     clock_gettime(CLOCK_REALTIME, &now_realtime);
     /* CSV format: type (Query), timestamp, connection ID, query ID, Poisson ID, poisson interval (in µs), unused. */
-    printf("Q,%lu.%.9lu,%u,%u,%u,%lu,\n",
+    printf("Q,%lu.%.9lu,%u,%u,%u,,\n",
 	   now_realtime.tv_sec, now_realtime.tv_nsec,
 	   connection->connection_id,
 	   connection->query_id,
-	   params->process_id,
-	   (1000000 * interval.tv_sec) + interval.tv_usec);
+	   data->process->process_id);
   }
   send_query(connection);
 }
 
+static void add_poisson_sender()
+{
+  struct poisson_process *process = poisson_new(base);
+  struct callback_data *callback_arg = malloc(sizeof(struct callback_data));
+  callback_arg->process = process;
+  callback_arg->connections = connections;
+  poisson_set_callback(process, send_query_callback, callback_arg);
+  poisson_set_rate(process, poisson_rate);
+  int ret = poisson_start_process(process, NULL);
+  if (ret != 0) {
+    fprintf(stderr, "Failed to start Poisson process %u\n", process->process_id);
+  }
+}
+
 void usage(char* progname) {
-  fprintf(stderr, "usage: %s [-h] [-v] [-R] [-s random_seed] [-t duration]  [--stdin]  -p <port>  -r <rate>  -c <nb_conn>  <host>\n",
+  fprintf(stderr, "usage: %s [-h] [-v] [-R] [-s random_seed] [-t duration]  [--stdin]  [--stdin-rateslope]  -p <port>  -r <rate>  -c <nb_conn>  <host>\n",
 	  progname);
   fprintf(stderr, "Connects to the specified host and port, with the chosen number of UDP connections.\n");
   fprintf(stderr, "[rate] is the total number of writes per second towards the server, accross all UDP connections.\n");
@@ -143,12 +148,15 @@ void usage(char* progname) {
   fprintf(stderr, "With option '-t', only send queries for the given amount of seconds.\n");
   fprintf(stderr, "With option '--stdin', the program ignores 'rate' and 'duration' and expects them\n");
   fprintf(stderr, "to be given on stdin as a sequence of '<duration_ms> <rate>' lines, with a first line giving the number of subsequent lines.\n");
+  fprintf(stderr, "With option '--stdin-rateslope', the program starts from 'rate' qps, and expects\n");
+  fprintf(stderr, "a sequence of '<duration_ms> <slope>' lines to be given on stdin, where each\n");
+  fprintf(stderr, "'slope' in qps/s indicates how much to increase or decrease the query rate. The first line\n");
+  fprintf(stderr, "must give the number of subsequent lines.\n");
   fprintf(stderr, "Option '-s' allows to choose a random seed (unsigned int) to determine times of transmission.  By default, the seed is set to 42\n");
 }
 
 int main(int argc, char** argv)
 {
-  struct event_base *base;
   struct event_config *ev_cfg;
   struct event *conn_event;
   struct addrinfo hints;
@@ -156,13 +164,10 @@ int main(int argc, char** argv)
   struct sockaddr_storage *server;
   struct timeval initial_timeout;
   struct timeval duration_timeval;
-  /* Array of all UDP connections */
-  struct udp_connection *connections;
-  /* Array of all Poisson processes */
-  struct poisson_process *processes;
   /* Optional stdin-based commands */
   unsigned int nb_commands;
   struct command *commands;
+  struct rateslope_command *rateslope_commands;
   struct event *change_rate_ev;
   unsigned int min_query_rate = 0xffffffff;
   unsigned int max_query_rate = 0;
@@ -173,7 +178,10 @@ int main(int argc, char** argv)
   int ret;
   int opt;
   unsigned long int duration = 0, random_seed = 42;
-  unsigned long int conn_id, process_id;
+  unsigned long int conn_id;
+  unsigned int nb_poisson_processes;
+  struct poisson_process *process;
+  struct callback_data *callback_arg;
   char *host = NULL, *port = NULL;
   char host_s[NI_MAXHOST];
   char port_s[NI_MAXSERV];
@@ -184,14 +192,18 @@ int main(int argc, char** argv)
   /* Start with options */
   int option_index = -1;
   static struct option long_options[] = {
-    {"stdin", no_argument, NULL, 0},
-    {NULL,    0,           NULL, 0}
+    {"stdin",            no_argument, NULL, 0},
+    {"stdin-rateslope",  no_argument, NULL, 0},
+    {NULL,    0,         NULL, 0}
   };
   while ((opt = getopt_long(argc, argv, "p:r:c:n:vRs:t:h", long_options, &option_index)) != -1) {
     switch (opt) {
     case 0: /* long option */
       if (option_index == 0) { /* --stdin */
 	stdin_commands = 1;
+      }
+      if (option_index == 1) { /* --stdin-rateslope */
+	stdin_rateslope_commands = 1;
       }
       break;
     case 'p': /* UDP port */
@@ -234,8 +246,13 @@ int main(int argc, char** argv)
     usage(argv[0]);
     return 1;
   }
-  if (stdin_commands == 1 && (duration != 0 || max_query_rate != 0)) {
-    fprintf(stderr, "Error: --stdin is not compatible with -t and -r\n");
+  if (stdin_commands == 1 && (duration != 0 || max_query_rate != 0 || stdin_rateslope_commands != 0)) {
+    fprintf(stderr, "Error: --stdin is not compatible with -t, -r, or --stdin-rateslope\n");
+    usage(argv[0]);
+    return 1;
+  }
+  if (stdin_rateslope_commands == 1 && (duration != 0 || stdin_commands != 0)) {
+    fprintf(stderr, "Error: --stdin-rateslope is not compatible with -t or --stdin\n");
     usage(argv[0]);
     return 1;
   }
@@ -252,6 +269,15 @@ int main(int argc, char** argv)
       return ret;
     debug("Minimum query rate: %u\n", min_query_rate);
     debug("Maximum query rate: %u\n", max_query_rate);
+  } else if (stdin_rateslope_commands == 1) {
+    ret = read_nb_commands(&nb_commands);
+    if (ret == -1)
+      return ret;
+    /* Read "rate slope change" commands */
+    rateslope_commands = calloc(nb_commands, sizeof(struct rateslope_command));
+    ret = read_rateslope_commands(rateslope_commands, nb_commands);
+    if (ret == -1)
+      return ret;
   }
 
   srand48(random_seed);
@@ -404,20 +430,22 @@ int main(int argc, char** argv)
   info("Opened %ld connections to host %s port %s\n", conn_id, host_s, port_s);
 
   info("Starting %u Poisson processes generating queries...\n", nb_poisson_processes);
-  processes = malloc(nb_poisson_processes * sizeof(struct poisson_process));
-  for (process_id = 0; process_id < nb_poisson_processes; process_id++) {
+  for (int i = 0; i < nb_poisson_processes; i++) {
     generate_poisson_interarrival(&initial_timeout, poisson_rate);
     /* Add 5 seconds to avoid missing query deadline even before we start
        the event loop.  Without this, the first queries all go out at the
        same time, creating a large burst. */
     initial_timeout.tv_sec += 5;
     debug("initial timeout %ld s %ld us\n", initial_timeout.tv_sec, initial_timeout.tv_usec);
-    processes[process_id].process_id = process_id;
-    processes[process_id].connections = connections;
-    processes[process_id].write_event = event_new(base, -1, 0, poisson_process_writecb, &(processes[process_id]));
-    ret = event_add(processes[process_id].write_event, &initial_timeout);
+    process = poisson_new(base);
+    callback_arg = malloc(sizeof(struct callback_data));
+    callback_arg->process = process;
+    callback_arg->connections = connections;
+    poisson_set_callback(process, send_query_callback, callback_arg);
+    poisson_set_rate(process, poisson_rate);
+    ret = poisson_start_process(process, &initial_timeout);
     if (ret != 0) {
-      fprintf(stderr, "Failed to start Poisson process %ld\n", process_id);
+      fprintf(stderr, "Failed to start Poisson process %u\n", process->process_id);
     }
   }
 
@@ -443,12 +471,29 @@ int main(int argc, char** argv)
     event_base_loopexit(base, &delay_timeval);
   }
 
+  /* Schedule changes of query rate slope. */
+  if (stdin_rateslope_commands == 1) {
+    debug("Scheduling query rate slope changes according to stdin commands.\n");
+    /* Accounts for 5-seconds delay on all events */
+    struct timeval delay_timeval = {5, 0};
+    struct event *change_rate_slope_ev;
+    for (int i = 0; i < nb_commands; ++i) {
+      change_rate_slope_ev = event_new(base, -1, 0, change_query_rate_slope, &rateslope_commands[i]);
+      event_add(change_rate_slope_ev, &delay_timeval);
+      timeval_add_ms(&delay_timeval, rateslope_commands[i].duration_ms);
+    }
+    event_base_loopexit(base, &delay_timeval);
+  }
+
   info("Starting event loop\n");
   event_base_dispatch(base);
 
   /* Free all the things */
   if (stdin_commands == 1) {
     free(commands);
+  }
+  if (stdin_rateslope_commands == 1) {
+    free(rateslope_commands);
   }
   for (conn_id = 0; conn_id < nb_conn; conn_id++) {
     if (connections[conn_id].event != NULL) {
@@ -459,12 +504,7 @@ int main(int argc, char** argv)
     }
   }
   free(connections);
-  for (process_id = 0; process_id < nb_poisson_processes; process_id++) {
-    if (processes[process_id].write_event != NULL) {
-      event_free(processes[process_id].write_event);
-    }
-  }
-  free(processes);
+  poisson_destroy(1);
   event_base_free(base);
   return 0;
 }

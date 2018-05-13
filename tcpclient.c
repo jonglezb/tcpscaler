@@ -218,7 +218,7 @@ int main(int argc, char** argv)
   int option_index = -1;
   static struct option long_options[] = {
     {"stdin",            no_argument, NULL, 0},
-    {"stdin-rateslope", no_argument, NULL, 0},
+    {"stdin-rateslope",  no_argument, NULL, 0},
     {NULL,               0,           NULL, 0}
   };
   while ((opt = getopt_long(argc, argv, "p:r:c:n:vRs:t:h", long_options, &option_index)) != -1) {
@@ -294,8 +294,7 @@ int main(int argc, char** argv)
       return ret;
     debug("Minimum query rate: %u\n", min_query_rate);
     debug("Maximum query rate: %u\n", max_query_rate);
-  }
-  else if (stdin_rateslope_commands == 1) {
+  } else if (stdin_rateslope_commands == 1) {
     ret = read_nb_commands(&nb_commands);
     if (ret == -1)
       return ret;
