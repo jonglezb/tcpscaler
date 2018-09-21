@@ -9,6 +9,7 @@
 #include <event2/event.h>
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
+#include <event2/bufferevent_ssl.h>
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/resource.h>
@@ -17,6 +18,7 @@
 #include <netinet/tcp.h>
 #include <netdb.h>
 #include <time.h>
+#include <openssl/ssl.h>
 
 #include "common.h"
 
@@ -24,6 +26,8 @@
 struct tcp_connection {
   /* The actual connection, encapsulated in a bufferevent. */
   struct bufferevent *bev;
+  /* Optional openssl context */
+  SSL *ssl;
   /* ID of the connection, mostly for logging purpose. */
   uint32_t connection_id;
   /* Current query ID, incremented for each query and used to index the
@@ -161,9 +165,9 @@ static void eventcb(struct bufferevent *bev, short events, void *ptr)
 }
 
 void usage(char* progname) {
-  fprintf(stderr, "usage: %s [-h] [-v] [-R] [-s random_seed] [-t duration]  [--stdin]  [--stdin-rateslope]  [-n new_conn_rate]  -p <port>  -r <rate>  -c <nb_conn>  <host>\n",
+  fprintf(stderr, "usage: %s [-h] [-v] [-R] [-s random_seed] [-t duration]  [--stdin]  [--stdin-rateslope]  [--tls]  [-n new_conn_rate]  -p <port>  -r <rate>  -c <nb_conn>  <host>\n",
 	  progname);
-  fprintf(stderr, "Connects to the specified host and port, with the chosen number of TCP connections.\n");
+  fprintf(stderr, "Connects to the specified host and port, with the chosen number of TCP or TLS connections.\n");
   fprintf(stderr, "[rate] is the total number of writes per second towards the server, accross all TCP connections.\n");
   fprintf(stderr, "Each write is 31 bytes.\n");
   fprintf(stderr, "[new_conn_rate] is the number of new connections to open per second when starting the client.\n");
@@ -201,6 +205,7 @@ int main(int argc, char** argv)
   int on = 1;
   int ret;
   int opt;
+  short use_tls = 0;
   unsigned long int duration = 0, new_conn_rate = 1000, random_seed = 42;
   unsigned long int new_conn_interval;
   unsigned long int conn_id;
@@ -210,6 +215,9 @@ int main(int argc, char** argv)
   char *host = NULL, *port = NULL;
   char host_s[NI_MAXHOST];
   char port_s[NI_MAXSERV];
+  /* TLS handling */
+  SSL *ssl = NULL;
+  SSL_CTX *ssl_ctx = NULL;
 
   verbose = 0;
   print_rtt = 0;
@@ -219,6 +227,7 @@ int main(int argc, char** argv)
   static struct option long_options[] = {
     {"stdin",            no_argument, NULL, 0},
     {"stdin-rateslope",  no_argument, NULL, 0},
+    {"tls",              no_argument, NULL, 0},
     {NULL,               0,           NULL, 0}
   };
   while ((opt = getopt_long(argc, argv, "p:r:c:n:vRs:t:h", long_options, &option_index)) != -1) {
@@ -229,6 +238,9 @@ int main(int argc, char** argv)
       }
       if (option_index == 1) { /* --stdin-rateslope */
 	stdin_rateslope_commands = 1;
+      }
+      if (option_index == 2) { /* --tls */
+	use_tls = 1;
       }
       break;
     case 'p': /* TCP port */
@@ -306,6 +318,12 @@ int main(int argc, char** argv)
   }
 
   srand48(random_seed);
+
+  if (use_tls) {
+    /* Initialise TLS client */
+    ssl_ctx = SSL_CTX_new(TLS_client_method());
+    SSL_CTX_set_min_proto_version(ssl_ctx, TLS1_1_VERSION);
+  }
 
   /* Compute maximum number of queries in flight.  Use a "safety factor"
      of 8 to account for the worst case. */
@@ -439,6 +457,7 @@ int main(int argc, char** argv)
       perror("Failed to create socket");
       break;
     }
+
     ret = connect(sock, (struct sockaddr*)server, server_len);
     if (ret != 0) {
       perror("Failed to connect to host");
@@ -450,11 +469,24 @@ int main(int argc, char** argv)
       break;
     }
 
-    bufevents[conn_id] = bufferevent_socket_new(base, sock, 0);
+    if (use_tls) {
+      ssl = SSL_new(ssl_ctx);
+      if (ssl == NULL) {
+	perror("Failed to initialise openssl object");
+	break;
+      }
+      bufevents[conn_id] = bufferevent_openssl_socket_new(base, sock,
+							  ssl, BUFFEREVENT_SSL_CONNECTING,
+							  BEV_OPT_DEFER_CALLBACKS | BEV_OPT_CLOSE_ON_FREE);
+    } else {
+      bufevents[conn_id] = bufferevent_socket_new(base, sock, 0);
+    }
+
     if (bufevents[conn_id] == NULL) {
       perror("Failed to create socket-based bufferevent");
       break;
     }
+
     /* Disable Nagle */
     bufev_fd = bufferevent_getfd(bufevents[conn_id]);
     if (bufev_fd == -1) {
@@ -463,6 +495,7 @@ int main(int argc, char** argv)
       setsockopt(bufev_fd, IPPROTO_TCP, TCP_NODELAY, &on, sizeof(on));
     }
     connections[conn_id].connection_id = conn_id;
+    connections[conn_id].ssl = ssl;
     connections[conn_id].query_id = 0;
     connections[conn_id].bev = bufevents[conn_id];
     connections[conn_id].query_timestamps = malloc(max_queries_in_flight * sizeof(struct timespec));
@@ -555,6 +588,12 @@ int main(int argc, char** argv)
     if (connections[conn_id].query_timestamps != NULL) {
       free(connections[conn_id].query_timestamps);
     }
+    if (use_tls) {
+      SSL_free(connections[conn_id].ssl);
+    }
+  }
+  if (use_tls) {
+    SSL_CTX_free(ssl_ctx);
   }
   free(bufevents);
   free(connections);

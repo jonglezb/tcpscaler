@@ -10,7 +10,7 @@ tcpserver: tcpserver.o
 	$(CC) -levent -o $@ $<
 
 tcpclient: tcpclient.o poisson.o utils.o
-	$(CC) -levent -lm -o $@ poisson.o utils.o $<
+	$(CC) -levent -levent_openssl -lssl -lm -o $@ poisson.o utils.o $<
 
 udpclient: udpclient.o
 	$(CC) -levent -lm -o $@ poisson.o utils.o $<
