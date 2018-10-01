@@ -46,6 +46,26 @@ struct callback_data {
 /* Array of all TCP connections */
 struct tcp_connection *connections;
 
+/* Like sleep(), blocks for the given number of seconds, but run the event
+   loop in the meantime. */
+static void event_sleep(unsigned int seconds)
+{
+  struct timeval tv;
+  tv.tv_sec = seconds;
+  tv.tv_usec = 0;
+  event_base_loopexit(base, &tv);
+  event_base_dispatch(base);
+}
+
+static void event_usleep(unsigned int usec)
+{
+  struct timeval tv;
+  tv.tv_sec = usec / 1000000;
+  tv.tv_usec = usec % 1000000;
+  event_base_loopexit(base, &tv);
+  event_base_dispatch(base);
+}
+
 static void readcb(struct bufferevent *bev, void *ctx)
 {
   struct tcp_connection *params = ctx;
@@ -507,12 +527,12 @@ int main(int argc, char** argv)
       debug("Opened %ld connections so far...\n", conn_id);
 
     /* Wait a bit between each connection to avoid overwhelming the server. */
-    usleep(new_conn_interval);
+    event_usleep(new_conn_interval);
   }
   info("Opened %ld connections to host %s port %s\n", conn_id, host_s, port_s);
 
   /* Leave some time for all connections to connect */
-  sleep(3 + nb_conn / 5000);
+  event_sleep(3 + nb_conn / 5000);
 
   info("Starting %u Poisson processes generating queries...\n", nb_poisson_processes);
   for (int i = 0; i < nb_poisson_processes; i++) {
