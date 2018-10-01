@@ -532,7 +532,11 @@ int main(int argc, char** argv)
   info("Opened %ld connections to host %s port %s\n", conn_id, host_s, port_s);
 
   /* Leave some time for all connections to connect */
-  event_sleep(3 + nb_conn / 5000);
+  if (use_tls) {
+    event_sleep(3 + nb_conn / 200);
+  } else {
+    event_sleep(3 + nb_conn / 5000);
+  }
 
   info("Starting %u Poisson processes generating queries...\n", nb_poisson_processes);
   for (int i = 0; i < nb_poisson_processes; i++) {
